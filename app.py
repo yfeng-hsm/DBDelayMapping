@@ -748,6 +748,7 @@ def make_train_flow_animation(
     window_start: datetime,
     window_end: datetime,
     outline: list[list[list[float]]],
+    show_under_30: bool,
 ) -> str:
     if not segments:
         return "<div style='color:#eee;padding:24px'>No mappable train movement data for this filter.</div>"
@@ -763,6 +764,7 @@ def make_train_flow_animation(
         "startEpochMs": int(start_time.timestamp() * 1000),
         "startParts": [start_time.year, start_time.month, start_time.day, start_time.hour, start_time.minute],
         "segmentCount": len(segments),
+        "showUnder30": show_under_30,
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
     return f"""
@@ -1060,7 +1062,7 @@ def make_train_flow_animation(
         head: {{x: hx, y: hy, delay: headGeo.delay}},
       }};
     }});
-    const visible = active;
+    const visible = active.filter(item => payload.showUnder30 || item.cls >= 30);
 
     for (const cls of [45, 75, 90]) {{
       for (const item of visible) {{
@@ -1099,6 +1101,7 @@ def main() -> None:
             default=[],
             help="Leave empty to include every train type after the Bus exclusion setting.",
         )
+        show_under_30 = st.checkbox("Show points under 30 min", value=True)
         top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
 
     window_start = datetime.combine(selected_day, time.min)
@@ -1142,7 +1145,7 @@ def main() -> None:
 
     if view == "Moving trains":
         components.html(
-            make_train_flow_animation(movement_segments, window_start, window_end, outline),
+            make_train_flow_animation(movement_segments, window_start, window_end, outline, show_under_30),
             height=800,
             scrolling=False,
         )
