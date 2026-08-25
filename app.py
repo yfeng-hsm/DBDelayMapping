@@ -1,0 +1,1226 @@
+from __future__ import annotations
+
+import json
+import os
+import tarfile
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+
+import plotly.express as px
+import plotly.graph_objects as go
+import polars as pl
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+
+
+BASE_URL = os.getenv(
+    "HF_DATASET_BASE_URL",
+    "https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main/monthly_processed_data",
+)
+CACHE_DIR = Path("/app/data/cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+STATION_TGZ_URL = "https://registry.npmjs.org/db-hafas-stations/-/db-hafas-stations-2.0.0.tgz"
+STATION_NDJSON = CACHE_DIR / "db-hafas-stations-full.ndjson"
+GERMANY_GEOJSON_URL = (
+    "https://raw.githubusercontent.com/isellsoap/deutschlandGeoJSON/main/2_bundeslaender/1_sehr_hoch.geo.json"
+)
+GERMANY_GEOJSON = CACHE_DIR / "germany-states.geo.json"
+
+
+REQUIRED_COLUMNS = [
+    "station_name",
+    "eva",
+    "train_number",
+    "line_number",
+    "final_destination_station",
+    "delay_in_min",
+    "time",
+    "arrival_is_canceled",
+    "departure_is_canceled",
+    "train_type",
+    "train_line_ride_id",
+    "train_line_station_num",
+    "arrival_planned_time",
+    "arrival_change_time",
+    "departure_planned_time",
+    "departure_change_time",
+    "id",
+]
+
+
+@st.cache_data(show_spinner=False)
+def ensure_month_file(year: int, month: int) -> str:
+    filename = f"data-{year:04d}-{month:02d}.parquet"
+    path = CACHE_DIR / filename
+    if path.exists() and path.stat().st_size > 0:
+        return str(path)
+
+    url = f"{BASE_URL}/{filename}"
+    tmp = path.with_suffix(".part")
+    with requests.get(url, stream=True, timeout=60) as response:
+        response.raise_for_status()
+        with tmp.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    handle.write(chunk)
+    tmp.replace(path)
+    return str(path)
+
+
+@st.cache_data(show_spinner=False)
+def ensure_station_file() -> str:
+    if STATION_NDJSON.exists() and STATION_NDJSON.stat().st_size > 0:
+        return str(STATION_NDJSON)
+
+    tgz_path = CACHE_DIR / "db-hafas-stations.tgz"
+    with requests.get(STATION_TGZ_URL, stream=True, timeout=60) as response:
+        response.raise_for_status()
+        with tgz_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    handle.write(chunk)
+
+    with tarfile.open(tgz_path, "r:gz") as archive:
+        member = archive.getmember("package/full.ndjson")
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            raise RuntimeError("package/full.ndjson not found in db-hafas-stations tarball")
+        with STATION_NDJSON.open("wb") as handle:
+            for chunk in iter(lambda: extracted.read(1024 * 1024), b""):
+                handle.write(chunk)
+
+    return str(STATION_NDJSON)
+
+
+@st.cache_data(show_spinner=False)
+def ensure_germany_geojson() -> str:
+    if GERMANY_GEOJSON.exists() and GERMANY_GEOJSON.stat().st_size > 0:
+        return str(GERMANY_GEOJSON)
+
+    tmp = GERMANY_GEOJSON.with_suffix(".part")
+    with requests.get(GERMANY_GEOJSON_URL, stream=True, timeout=60) as response:
+        response.raise_for_status()
+        with tmp.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    handle.write(chunk)
+    tmp.replace(GERMANY_GEOJSON)
+    return str(GERMANY_GEOJSON)
+
+
+@st.cache_data(show_spinner=False)
+def load_germany_outline(geojson_path: str, stride: int = 12) -> list[list[list[float]]]:
+    with open(geojson_path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+
+    rings: list[list[list[float]]] = []
+    for feature in data.get("features", []):
+        geometry = feature.get("geometry", {})
+        geo_type = geometry.get("type")
+        coordinates = geometry.get("coordinates", [])
+        polygons = [coordinates] if geo_type == "Polygon" else coordinates if geo_type == "MultiPolygon" else []
+        for polygon in polygons:
+            for ring in polygon[:1]:
+                sampled = ring[::stride]
+                if ring and sampled[-1] != ring[-1]:
+                    sampled.append(ring[-1])
+                if len(sampled) >= 3:
+                    rings.append([[round(float(lon), 4), round(float(lat), 4)] for lon, lat in sampled])
+    return rings
+
+
+@st.cache_data(show_spinner=False)
+def load_day(path: str, selected_day: date, train_types: list[str], max_rows: int) -> pl.DataFrame:
+    start = datetime.combine(selected_day, time.min)
+    end = start + timedelta(days=1)
+
+    scan = (
+        pl.scan_parquet(path)
+        .select(REQUIRED_COLUMNS)
+        .filter((pl.col("time") >= start) & (pl.col("time") < end))
+        .filter(pl.col("train_line_ride_id").is_not_null())
+        .filter(pl.col("train_line_station_num").is_not_null())
+        .filter(pl.col("delay_in_min").is_not_null())
+    )
+    if train_types:
+        scan = scan.filter(pl.col("train_type").is_in(train_types))
+
+    return scan.limit(max_rows).collect()
+
+
+def month_start(dt: datetime) -> datetime:
+    return datetime(dt.year, dt.month, 1)
+
+
+def next_month_start(dt: datetime) -> datetime:
+    if dt.month == 12:
+        return datetime(dt.year + 1, 1, 1)
+    return datetime(dt.year, dt.month + 1, 1)
+
+
+@st.cache_data(show_spinner=False)
+def load_time_window(
+    paths: tuple[str, ...], start: datetime, end: datetime, train_types: list[str], exclude_bus: bool
+) -> pl.DataFrame:
+    event_time_expr = pl.col("time").alias("event_time")
+    scans = []
+    for path in paths:
+        scan = (
+            pl.scan_parquet(path)
+            .select(REQUIRED_COLUMNS)
+            .with_columns(event_time_expr)
+            .filter((pl.col("time") >= start) & (pl.col("time") < end))
+            .filter(pl.col("train_line_ride_id").is_not_null())
+            .filter(pl.col("train_line_station_num").is_not_null())
+            .filter(pl.col("delay_in_min").is_not_null())
+        )
+        if train_types:
+            scan = scan.filter(pl.col("train_type").is_in(train_types))
+        elif exclude_bus:
+            scan = scan.filter(pl.col("train_type").fill_null("") != "Bus")
+        scans.append(scan)
+
+    if not scans:
+        return pl.DataFrame()
+    return pl.concat(scans).collect()
+
+
+def normalize_eva(value: object) -> str:
+    text = "" if value is None else str(value)
+    text = "".join(ch for ch in text if ch.isdigit())
+    return text.lstrip("0") or text
+
+
+@st.cache_data(show_spinner=False)
+def load_station_coordinates(station_file: str, evas: tuple[str, ...]) -> pl.DataFrame:
+    wanted = {normalize_eva(eva) for eva in evas if eva is not None}
+    coords: dict[str, dict[str, object]] = {}
+
+    def add_station(station: dict[str, object] | None) -> None:
+        if not station:
+            return
+        station_id = normalize_eva(station.get("id"))
+        if station_id not in wanted or station_id in coords:
+            return
+        location = station.get("location")
+        if not isinstance(location, dict):
+            return
+        lat = location.get("latitude")
+        lon = location.get("longitude")
+        if lat is None or lon is None:
+            return
+        coords[station_id] = {
+            "eva_norm": station_id,
+            "coord_name": station.get("name"),
+            "lat": float(lat),
+            "lon": float(lon),
+        }
+
+    with open(station_file, "r", encoding="utf-8") as handle:
+        for line in handle:
+            if len(coords) >= len(wanted):
+                break
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            add_station(row)
+            nested = row.get("station") if isinstance(row, dict) else None
+            add_station(nested if isinstance(nested, dict) else None)
+
+    if not coords:
+        return pl.DataFrame({"eva_norm": [], "coord_name": [], "lat": [], "lon": []})
+    return pl.DataFrame(list(coords.values()))
+
+
+def attach_coordinates(day_df: pl.DataFrame, station_file: str) -> tuple[pl.DataFrame, int]:
+    with_eva = day_df.with_columns(
+        pl.col("eva").cast(pl.Utf8).str.replace_all(r"[^0-9]", "").str.replace(r"^0+", "").alias("eva_norm")
+    )
+    evas = tuple(with_eva["eva_norm"].drop_nulls().unique().to_list())
+    coord_df = load_station_coordinates(station_file, evas)
+    joined = with_eva.join(coord_df, on="eva_norm", how="left")
+    matched = joined.filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())["eva_norm"].n_unique()
+    return joined, matched
+
+
+def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
+    return (
+        day_df.group_by("train_line_ride_id")
+        .agg(
+            pl.col("train_type").drop_nulls().first().alias("train_type"),
+            pl.col("train_number").drop_nulls().first().alias("train_number"),
+            pl.col("line_number").drop_nulls().first().alias("line_number"),
+            pl.col("final_destination_station").drop_nulls().last().alias("destination"),
+            pl.col("time").min().alias("first_seen"),
+            pl.col("time").max().alias("last_seen"),
+            pl.col("station_name").n_unique().alias("station_count"),
+            pl.col("delay_in_min").max().alias("max_delay"),
+            pl.col("delay_in_min").mean().round(1).alias("mean_delay"),
+            pl.col("arrival_is_canceled").any().alias("arrival_cancelled"),
+            pl.col("departure_is_canceled").any().alias("departure_cancelled"),
+        )
+        .filter(pl.col("station_count") >= 3)
+        .sort(["max_delay", "station_count"], descending=[True, True])
+    )
+
+
+def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
+    selected_ids = top_trips["train_line_ride_id"].to_list()
+    plot_df = (
+        df.filter(pl.col("train_line_ride_id").is_in(selected_ids))
+        .with_columns(
+            (
+                pl.col("train_type").fill_null("")
+                + pl.lit(" ")
+                + pl.col("train_number").fill_null("")
+                + pl.lit(" -> ")
+                + pl.col("final_destination_station").fill_null("")
+            ).alias("train_label")
+        )
+        .sort(["first_order", "train_line_station_num"])
+    )
+    pdf = plot_df.to_pandas()
+    fig = px.scatter(
+        pdf,
+        x="train_line_station_num",
+        y="train_label",
+        color="delay_in_min",
+        size="delay_abs",
+        hover_name="station_name",
+        hover_data={
+            "train_line_station_num": True,
+            "delay_in_min": True,
+            "time": True,
+            "arrival_is_canceled": True,
+            "departure_is_canceled": True,
+            "delay_abs": False,
+            "train_label": False,
+        },
+        color_continuous_scale="RdYlGn_r",
+        range_color=[-5, max(20, int(pdf["delay_in_min"].quantile(0.95))) if len(pdf) else 20],
+        title="Delay propagation across selected train runs",
+        labels={
+            "train_line_station_num": "Stop sequence",
+            "train_label": "Train run",
+            "delay_in_min": "Delay (min)",
+        },
+    )
+    fig.update_layout(height=max(520, 22 * max(1, len(selected_ids))), margin=dict(l=20, r=20, t=60, b=30))
+    return fig
+
+
+def make_trip_line(df: pl.DataFrame, ride_id: str) -> go.Figure:
+    trip = (
+        df.filter(pl.col("train_line_ride_id") == ride_id)
+        .sort("train_line_station_num")
+        .with_columns(
+            pl.when(pl.col("station_name").is_null())
+            .then(pl.col("eva"))
+            .otherwise(pl.col("station_name"))
+            .alias("station_label")
+        )
+    )
+    pdf = trip.to_pandas()
+    title_parts = [
+        str(pdf["train_type"].dropna().iloc[0]) if pdf["train_type"].notna().any() else "",
+        str(pdf["train_number"].dropna().iloc[0]) if pdf["train_number"].notna().any() else "",
+    ]
+    title = " ".join(part for part in title_parts if part).strip() or ride_id
+    fig = px.line(
+        pdf,
+        x="train_line_station_num",
+        y="delay_in_min",
+        markers=True,
+        hover_name="station_label",
+        hover_data=["time", "final_destination_station", "arrival_is_canceled", "departure_is_canceled"],
+        title=f"{title}: delay along route",
+        labels={"train_line_station_num": "Stop sequence", "delay_in_min": "Delay (min)"},
+    )
+    fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="gray")
+    fig.update_traces(marker=dict(size=8))
+    fig.update_layout(height=420, margin=dict(l=20, r=20, t=60, b=30))
+    return fig
+
+
+def make_hourly_chart(df: pl.DataFrame) -> go.Figure:
+    hourly = (
+        df.with_columns(pl.col("time").dt.truncate("1h").alias("hour"))
+        .group_by(["hour", "train_type"])
+        .agg(
+            pl.col("delay_in_min").mean().alias("mean_delay"),
+            pl.col("delay_in_min").quantile(0.9).alias("p90_delay"),
+            pl.len().alias("events"),
+        )
+        .sort("hour")
+    )
+    pdf = hourly.to_pandas()
+    fig = px.line(
+        pdf,
+        x="hour",
+        y="p90_delay",
+        color="train_type",
+        markers=True,
+        title="Hourly p90 delay by train type",
+        labels={"hour": "Hour", "p90_delay": "P90 delay (min)", "train_type": "Train type"},
+    )
+    fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30))
+    return fig
+
+
+def style_delay_geo(fig: go.Figure, title: str, height: int = 780) -> go.Figure:
+    fig.update_geos(
+        visible=True,
+        resolution=50,
+        lataxis_range=[47.0, 55.6],
+        lonaxis_range=[5.2, 15.6],
+        showland=True,
+        landcolor="#090909",
+        showocean=True,
+        oceancolor="#050505",
+        showlakes=False,
+        showcountries=True,
+        countrycolor="#50313b",
+        showsubunits=True,
+        subunitcolor="#2f2228",
+        coastlinecolor="#50313b",
+        bgcolor="#050505",
+        projection_type="mercator",
+    )
+    fig.update_layout(
+        title=title,
+        height=height,
+        paper_bgcolor="#050505",
+        plot_bgcolor="#050505",
+        font=dict(color="#f2edf0"),
+        margin=dict(l=0, r=0, t=50, b=0),
+    )
+    return fig
+
+
+def make_delay_map(df: pl.DataFrame, bin_minutes: int, min_delay: int) -> go.Figure:
+    bin_expr = f"{bin_minutes}m"
+    base = (
+        df.filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
+        .filter(pl.col("delay_in_min") >= min_delay)
+        .with_columns(pl.col("time").dt.truncate(bin_expr).alias("time_bin"))
+        .group_by(["time_bin", "eva_norm", "station_name", "coord_name", "lat", "lon"])
+        .agg(
+            pl.col("delay_in_min").max().alias("max_delay"),
+            pl.col("delay_in_min").mean().round(1).alias("mean_delay"),
+            pl.col("train_line_ride_id").n_unique().alias("train_runs"),
+            pl.len().alias("events"),
+        )
+        .with_columns(
+            pl.col("max_delay").clip(1, 90).alias("bubble_size"),
+            pl.col("time_bin").dt.strftime("%H:%M").alias("time_label"),
+        )
+        .sort(["time_bin", "max_delay"], descending=[False, True])
+    )
+    if base.is_empty():
+        fig = go.Figure()
+        fig.update_layout(title="No mappable delayed events for this filter")
+        return fig
+
+    bins = base.select("time_bin").unique().sort("time_bin")["time_bin"].to_list()
+    color_max = max(20, int(base["max_delay"].quantile(0.98)))
+    trail_steps = 4
+    frames = []
+
+    for current_idx, current_bin in enumerate(bins):
+        window_bins = bins[max(0, current_idx - trail_steps + 1) : current_idx + 1]
+        frame_traces = []
+        for age in range(trail_steps):
+            opacity = max(0.16, 0.82 - age * 0.18)
+            size_scale = max(0.45, 1.0 - age * 0.15)
+            if age < len(window_bins):
+                bin_value = list(reversed(window_bins))[age]
+                slice_df = base.filter(pl.col("time_bin") == bin_value)
+                pdf = slice_df.to_pandas()
+                name = f"{bin_value:%H:%M}" if age == 0 else f"trail -{age}"
+                lat = pdf["lat"]
+                lon = pdf["lon"]
+                marker_size = pdf["bubble_size"].clip(1, 90) * size_scale + 4
+                marker_color = pdf["max_delay"]
+                text = pdf["station_name"]
+                customdata = pdf[["time_label", "max_delay", "mean_delay", "train_runs", "events"]].to_numpy()
+            else:
+                name = f"trail -{age}"
+                lat = []
+                lon = []
+                marker_size = []
+                marker_color = []
+                text = []
+                customdata = []
+            frame_traces.append(
+                go.Scattergeo(
+                    lat=lat,
+                    lon=lon,
+                    mode="markers",
+                    marker=dict(
+                        size=marker_size,
+                        color=marker_color,
+                        colorscale="Reds",
+                        cmin=0,
+                        cmax=color_max,
+                        opacity=opacity,
+                        line=dict(width=0),
+                        colorbar=dict(title="minutes late") if age == 0 else None,
+                    ),
+                    text=text,
+                    customdata=customdata,
+                    hovertemplate="<b>%{text}</b><br>%{customdata[0]}<br>Max delay %{customdata[1]} min<br>Mean delay %{customdata[2]} min<br>Train runs %{customdata[3]}<br>Events %{customdata[4]}<extra></extra>",
+                    name=name,
+                    showlegend=False,
+                )
+            )
+        frames.append(go.Frame(data=frame_traces, name=f"{current_bin:%H:%M}"))
+
+    fig = go.Figure(data=frames[0].data, frames=frames)
+    slider_steps = [
+        {
+            "args": [
+                [frame.name],
+                {"frame": {"duration": 350, "redraw": True}, "mode": "immediate", "transition": {"duration": 150}},
+            ],
+            "label": frame.name,
+            "method": "animate",
+        }
+        for frame in frames
+    ]
+    fig.update_layout(
+        updatemenus=[
+            {
+                "type": "buttons",
+                "showactive": False,
+                "x": 0.02,
+                "y": 0.05,
+                "buttons": [
+                    {
+                        "label": "Play",
+                        "method": "animate",
+                        "args": [
+                            None,
+                            {
+                                "frame": {"duration": 350, "redraw": True},
+                                "fromcurrent": True,
+                                "transition": {"duration": 150},
+                            },
+                        ],
+                    },
+                    {
+                        "label": "Pause",
+                        "method": "animate",
+                        "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}],
+                    },
+                ],
+            }
+        ],
+        sliders=[
+            {
+                "active": 0,
+                "currentvalue": {"prefix": "Time "},
+                "pad": {"t": 35},
+                "steps": slider_steps,
+            }
+        ],
+    )
+    return style_delay_geo(fig, "Delay diffusion map with fading trail")
+
+
+def make_trip_map(df: pl.DataFrame, ride_id: str) -> go.Figure:
+    trip = (
+        df.filter(pl.col("train_line_ride_id") == ride_id)
+        .filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
+        .sort("train_line_station_num")
+    )
+    fig = go.Figure()
+    if trip.is_empty():
+        fig.update_layout(title="No coordinates found for this train run")
+        return fig
+
+    pdf = trip.to_pandas()
+    label = " ".join(
+        part
+        for part in [
+            str(pdf["train_type"].dropna().iloc[0]) if pdf["train_type"].notna().any() else "",
+            str(pdf["train_number"].dropna().iloc[0]) if pdf["train_number"].notna().any() else "",
+        ]
+        if part
+    ).strip()
+    delays = pdf["delay_in_min"].clip(lower=0)
+    fig.add_trace(
+        go.Scattergeo(
+            lat=pdf["lat"],
+            lon=pdf["lon"],
+            mode="lines+markers",
+            line=dict(width=2, color="rgba(255,60,60,0.75)"),
+            marker=dict(
+                size=(delays.clip(1, 45) + 6),
+                color=pdf["delay_in_min"],
+                colorscale="Reds",
+                cmin=0,
+                cmax=max(20, int(pdf["delay_in_min"].quantile(0.95))),
+                opacity=0.82,
+                colorbar=dict(title="delay"),
+            ),
+            text=pdf["station_name"],
+            customdata=pdf[["train_line_station_num", "delay_in_min", "time"]].to_numpy(),
+            hovertemplate="<b>%{text}</b><br>Stop %{customdata[0]}<br>Delay %{customdata[1]} min<br>%{customdata[2]}<extra></extra>",
+        )
+    )
+    return style_delay_geo(fig, f"{label or ride_id}: route delay trace", height=620)
+
+
+def build_movement_segments(
+    df: pl.DataFrame, window_start: datetime, window_end: datetime
+) -> tuple[list[dict[str, object]], dict[str, int], pl.DataFrame]:
+    base = (
+        df.filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
+        .filter(pl.col("train_line_ride_id").is_not_null())
+        .with_columns(pl.col("time").alias("event_time"))
+        .filter(pl.col("event_time").is_not_null())
+        .filter((pl.col("event_time") >= window_start) & (pl.col("event_time") < window_end))
+        .sort(["train_line_ride_id", "event_time", "train_line_station_num"])
+        .with_columns(
+            pl.col("train_line_station_num").shift(1).over("train_line_ride_id").alias("_prev_station_num"),
+            pl.col("event_time").shift(1).over("train_line_ride_id").alias("_prev_event_time"),
+        )
+        .with_columns(
+            pl.when(pl.col("_prev_event_time").is_null())
+            .then(1)
+            .when(pl.col("train_line_station_num") < pl.col("_prev_station_num"))
+            .then(1)
+            .when((pl.col("event_time") - pl.col("_prev_event_time")).dt.total_minutes() > 480)
+            .then(1)
+            .otherwise(0)
+            .cum_sum()
+            .over("train_line_ride_id")
+            .alias("trip_instance")
+        )
+        .sort(["train_line_ride_id", "trip_instance", "train_line_station_num", "event_time"])
+    )
+    stats = {
+        "candidate_rows": base.height,
+        "candidate_train_runs": base.select(["train_line_ride_id", "trip_instance"]).unique().height
+        if not base.is_empty()
+        else 0,
+        "rendered_train_runs": 0,
+        "rendered_points": 0,
+        "non_monotonic_points": 0,
+        "short_segments": 0,
+        "long_segments": 0,
+        "single_point_runs": 0,
+        "no_valid_segment_runs": 0,
+    }
+    if base.is_empty():
+        return [], stats, pl.DataFrame()
+
+    ordered = (
+        base.group_by(["train_line_ride_id", "trip_instance", "train_line_station_num"])
+        .agg(
+            pl.col("event_time").min().alias("event_time"),
+            pl.col("lat").first().alias("lat"),
+            pl.col("lon").first().alias("lon"),
+            pl.col("delay_in_min").max().alias("delay"),
+        )
+        .sort(["train_line_ride_id", "trip_instance", "train_line_station_num", "event_time"])
+    )
+    stats["rendered_points"] = ordered.height
+    run_sizes = ordered.group_by(["train_line_ride_id", "trip_instance"]).agg(pl.len().alias("points"))
+    stats["single_point_runs"] = run_sizes.filter(pl.col("points") < 2).height
+
+    pairs = (
+        ordered.with_columns(
+            pl.col("event_time").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_event_time"),
+            pl.col("lat").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_lat"),
+            pl.col("lon").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_lon"),
+            pl.col("delay").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_delay"),
+        )
+        .filter(pl.col("next_event_time").is_not_null())
+        .with_columns((pl.col("next_event_time") - pl.col("event_time")).dt.total_minutes().alias("gap_min"))
+    )
+    stats["short_segments"] = pairs.filter(pl.col("gap_min") < 2).height
+    stats["long_segments"] = pairs.filter(pl.col("gap_min") > 360).height
+    valid = pairs.filter((pl.col("gap_min") >= 2) & (pl.col("gap_min") <= 360))
+    stats["rendered_train_runs"] = valid.select(["train_line_ride_id", "trip_instance"]).unique().height
+    stats["no_valid_segment_runs"] = max(0, stats["candidate_train_runs"] - stats["rendered_train_runs"] - stats["single_point_runs"])
+
+    segments_df = (
+        valid.with_columns(
+            ((pl.col("event_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t0"),
+            ((pl.col("next_event_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t1"),
+            pl.col("lon").round(4).alias("lon0"),
+            pl.col("lat").round(4).alias("lat0"),
+            pl.col("next_lon").round(4).alias("lon1"),
+            pl.col("next_lat").round(4).alias("lat1"),
+            pl.col("delay").fill_null(0).cast(pl.Int32).alias("d0"),
+            pl.col("next_delay").fill_null(0).cast(pl.Int32).alias("d1"),
+        )
+        .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1"])
+    )
+    issue_df = (
+        pairs.filter((pl.col("gap_min") < 2) | (pl.col("gap_min") > 360))
+        .select(["train_line_ride_id", "trip_instance", "event_time", "next_event_time", "gap_min"])
+        .head(500)
+    )
+    return segments_df.to_dicts(), stats, issue_df
+
+
+def delay_class_value(delay: float) -> str:
+    if delay <= 0.5:
+        return "0"
+    if delay < 30:
+        return "15"
+    if delay < 45:
+        return "30"
+    if delay < 75:
+        return "45"
+    if delay < 90:
+        return "75"
+    return "90+"
+
+
+def build_active_segment_audit(
+    segments: list[dict[str, object]], window_start: datetime, window_end: datetime
+) -> pl.DataFrame:
+    rows = []
+    max_minute = int((window_end - window_start).total_seconds() // 60)
+    for minute in range(0, max_minute + 1, 15):
+        counts = {"0": 0, "15": 0, "30": 0, "45": 0, "75": 0, "90+": 0}
+        active_segments = 0
+        for segment in segments:
+            if segment["t0"] <= minute <= segment["t1"]:
+                span = max(0.001, segment["t1"] - segment["t0"])
+                u = (minute - segment["t0"]) / span
+                delay = segment["d0"] + (segment["d1"] - segment["d0"]) * u
+                counts[delay_class_value(max(0, delay))] += 1
+                active_segments += 1
+        rows.append(
+            {
+                "time": window_start + timedelta(minutes=minute),
+                "active_segments": active_segments,
+                "delay_0": counts["0"],
+                "delay_15": counts["15"],
+                "delay_30": counts["30"],
+                "delay_45": counts["45"],
+                "delay_75": counts["75"],
+                "delay_90_plus": counts["90+"],
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def build_hourly_coverage(df: pl.DataFrame, window_start: datetime, window_end: datetime) -> pl.DataFrame:
+    hours = []
+    current = window_start
+    while current < window_end:
+        hours.append({"hour": current})
+        current += timedelta(hours=1)
+    timeline = pl.DataFrame(hours).with_columns(pl.col("hour").cast(pl.Datetime("us")))
+    coverage = (
+        df.with_columns(pl.col("event_time").dt.truncate("1h").alias("hour"))
+        .group_by("hour")
+        .agg(
+            pl.len().alias("rows"),
+            pl.col("train_line_ride_id").n_unique().alias("train_runs"),
+            pl.col("train_type").n_unique().alias("train_types"),
+            pl.col("delay_in_min").max().alias("max_delay"),
+        )
+        .with_columns(pl.col("hour").cast(pl.Datetime("us")))
+        .sort("hour")
+    )
+    return (
+        timeline.join(coverage, on="hour", how="left")
+        .with_columns(
+            pl.col("rows").fill_null(0),
+            pl.col("train_runs").fill_null(0),
+            pl.col("train_types").fill_null(0),
+            pl.col("max_delay").fill_null(0),
+        )
+        .sort("hour")
+    )
+
+
+def make_train_flow_animation(
+    segments: list[dict[str, object]],
+    window_start: datetime,
+    window_end: datetime,
+    outline: list[list[list[float]]],
+) -> str:
+    if not segments:
+        return "<div style='color:#eee;padding:24px'>No mappable train movement data for this filter.</div>"
+
+    start_time = window_start
+    end_time = window_end
+    payload = {
+        "segments": segments,
+        "outline": outline,
+        "minT": 0,
+        "maxT": round((end_time - start_time).total_seconds() / 60, 2),
+        "startLabel": start_time.strftime("%Y-%m-%d %H:%M"),
+        "startEpochMs": int(start_time.timestamp() * 1000),
+        "startParts": [start_time.year, start_time.month, start_time.day, start_time.hour, start_time.minute],
+        "segmentCount": len(segments),
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    return f"""
+<div id="train-flow-root" style="height:780px;background:#050505;color:#f3edf0;position:relative;overflow:hidden;border:1px solid #241820">
+  <canvas id="train-flow-canvas" style="width:100%;height:100%;display:block"></canvas>
+  <div style="position:absolute;left:24px;top:18px;font:600 15px system-ui, sans-serif;letter-spacing:.02em">Moving train delay flow</div>
+  <div id="train-flow-clock" style="position:absolute;right:28px;top:20px;font:700 28px ui-monospace, SFMono-Regular, Menlo, monospace;color:#fff"></div>
+  <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#bdaeb5"></div>
+  <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#d8cbd1;background:rgba(5,5,5,.70);padding:12px 14px;border:1px solid #3b2630;min-width:132px">
+    <div style="margin-bottom:8px;color:#f3edf0">delay symbol</div>
+    <div style="display:flex;align-items:center;gap:9px;height:22px"><span style="width:3px;height:3px;border-radius:50%;background:#f5f7ff;display:inline-block"></span><span>0 min</span></div>
+    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:3px;height:3px;border-radius:50%;background:#ffb4ad;display:inline-block"></span><span>15 min</span></div>
+    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:4px;height:4px;border-radius:50%;background:#ff8b81;display:inline-block"></span><span>30 min</span></div>
+    <div style="display:flex;align-items:center;gap:7px;height:28px"><span style="width:13px;height:13px;border-radius:50%;background:#ff5f55;display:inline-block"></span><span>45 min</span></div>
+    <div style="display:flex;align-items:center;gap:6px;height:32px"><span style="width:18px;height:18px;border-radius:50%;background:#ff352f;display:inline-block;box-shadow:0 0 9px rgba(255,53,47,.55)"></span><span>75 min</span></div>
+    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#ff1512;display:inline-block;box-shadow:0 0 14px rgba(255,21,18,.75)"></span><span>90+ min</span></div>
+  </div>
+</div>
+<script>
+(() => {{
+  const payload = {payload_json};
+  const root = document.getElementById("train-flow-root");
+  const canvas = document.getElementById("train-flow-canvas");
+  const ctx = canvas.getContext("2d");
+  const clock = document.getElementById("train-flow-clock");
+  const count = document.getElementById("train-flow-count");
+  const cities = [
+    ["Hamburg", 10.00, 53.55], ["Berlin", 13.40, 52.52], ["Hannover", 9.73, 52.37],
+    ["Köln", 6.96, 50.94], ["Frankfurt", 8.68, 50.11], ["Leipzig", 12.37, 51.34],
+    ["Dresden", 13.74, 51.05], ["Nürnberg", 11.08, 49.45], ["Stuttgart", 9.18, 48.78],
+    ["München", 11.58, 48.14], ["Bremen", 8.80, 53.08]
+  ];
+  const lonMin = 5.2, lonMax = 15.6, latMin = 47.0, latMax = 55.6;
+  let w = 0, h = 0, dpr = 1;
+  let fit = null;
+  let simT = payload.minT;
+  let last = performance.now();
+  let lastDraw = 0;
+  const speed = 36;
+  const bucketSize = 5;
+  const trailMinutes = 12;
+  const frameInterval = 1000 / 24;
+  const segments = payload.segments || [];
+  const buckets = Array.from({{length: Math.ceil((payload.maxT - payload.minT) / bucketSize) + 2}}, () => []);
+  const starts = segments.map((segment, index) => [segment.t0, index]).sort((a, b) => a[0] - b[0]);
+  segments.forEach((segment, index) => {{
+    const startBucket = Math.max(0, Math.floor(segment.t0 / bucketSize));
+    const endBucket = Math.min(buckets.length - 1, Math.floor(segment.t1 / bucketSize));
+    for (let bucket = startBucket; bucket <= endBucket; bucket++) buckets[bucket].push(index);
+  }});
+  let bgCanvas = null;
+  let bgCtx = null;
+
+  function resize() {{
+    dpr = 1;
+    const rect = root.getBoundingClientRect();
+    w = Math.max(320, rect.width);
+    h = Math.max(520, rect.height);
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fit = computeFit();
+    bgCanvas = null;
+    bgCtx = null;
+  }}
+
+  function merc(lon, lat) {{
+    const y = Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2)) * 180 / Math.PI;
+    return [lon, y];
+  }}
+
+  function computeFit() {{
+    const [x0, y0] = merc(lonMin, latMin);
+    const [x1, y1] = merc(lonMax, latMax);
+    const padX = 42, padY = 34;
+    const scale = Math.min((w - padX * 2) / (x1 - x0), (h - padY * 2) / (y1 - y0));
+    const mapW = (x1 - x0) * scale;
+    const mapH = (y1 - y0) * scale;
+    return {{x0, y0, scale, ox: (w - mapW) / 2, oy: (h + mapH) / 2}};
+  }}
+
+  function project(lon, lat) {{
+    const [mx, my] = merc(lon, lat);
+    const x = fit.ox + (mx - fit.x0) * fit.scale;
+    const y = fit.oy - (my - fit.y0) * fit.scale;
+    return [x, y];
+  }}
+
+  function positionAt(train, t) {{
+    const pts = train.points;
+    if (t < pts[0].t || t > pts[pts.length - 1].t) return null;
+    for (let i = 0; i < pts.length - 1; i++) {{
+      const a = pts[i], b = pts[i + 1];
+      if (t >= a.t && t <= b.t) {{
+        const span = Math.max(0.001, b.t - a.t);
+        const u = (t - a.t) / span;
+        const lon = a.lon + (b.lon - a.lon) * u;
+        const lat = a.lat + (b.lat - a.lat) * u;
+        const delay = a.delay + (b.delay - a.delay) * u;
+        return {{lon, lat, delay, label: train.label}};
+      }}
+    }}
+    return null;
+  }}
+
+  function segmentPosition(segment, t) {{
+    const span = Math.max(0.001, segment.t1 - segment.t0);
+    const u = Math.max(0, Math.min(1, (t - segment.t0) / span));
+    const lon = segment.lon0 + (segment.lon1 - segment.lon0) * u;
+    const lat = segment.lat0 + (segment.lat1 - segment.lat0) * u;
+    const delay = segment.d0 + (segment.d1 - segment.d0) * u;
+    return {{lon, lat, delay}};
+  }}
+
+  function activeSegmentIndices(t) {{
+    const bucket = Math.max(0, Math.min(buckets.length - 1, Math.floor(t / bucketSize)));
+    return buckets[bucket].filter(index => {{
+      const segment = segments[index];
+      return t >= segment.t0 && t <= segment.t1;
+    }});
+  }}
+
+  function nextSegmentStartAfter(t) {{
+    let lo = 0, hi = starts.length;
+    while (lo < hi) {{
+      const mid = (lo + hi) >> 1;
+      if (starts[mid][0] <= t) lo = mid + 1;
+      else hi = mid;
+    }}
+    return lo < starts.length ? starts[lo][0] : null;
+  }}
+
+  function delayColor(delay, alpha) {{
+    const [r, g, b] = classColor(delayClass(delay));
+    return `rgba(${{r}},${{g}},${{b}},${{alpha}})`;
+  }}
+
+  function classColor(cls) {{
+    if (cls === 0) return [245, 247, 255];
+    if (cls === 15) return [255, 180, 173];
+    if (cls === 30) return [255, 139, 129];
+    if (cls === 45) return [255, 95, 85];
+    if (cls === 75) return [255, 53, 47];
+    return [255, 21, 18];
+  }}
+
+  function delayClass(delay) {{
+    if (delay <= 0.5) return 0;
+    if (delay < 30) return 15;
+    if (delay < 45) return 30;
+    if (delay < 75) return 45;
+    if (delay < 90) return 75;
+    return 90;
+  }}
+
+  function symbolRadius(delay) {{
+    const cls = delayClass(delay);
+    if (cls === 0) return 1.35;
+    if (cls === 15) return 1.55;
+    if (cls === 30) return 2.1;
+    if (cls === 45) return 6.4;
+    if (cls === 75) return 8.8;
+    return 11.8;
+  }}
+
+  function trailWidth(delay) {{
+    const cls = delayClass(delay);
+    if (cls === 0) return 0.5;
+    if (cls === 15) return 1.2;
+    if (cls === 30) return 1.2;
+    if (cls === 45) return 2.0;
+    if (cls === 75) return 2.8;
+    return 3.7;
+  }}
+
+  function formatSimTime(minutes) {{
+    const [year, month, day, hour, minute] = payload.startParts;
+    const value = new Date(Date.UTC(year, month - 1, day, hour, minute + Math.floor(minutes)));
+    const yyyy = value.getUTCFullYear();
+    const mm = String(value.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(value.getUTCDate()).padStart(2, "0");
+    const hh = String(value.getUTCHours()).padStart(2, "0");
+    const mi = String(value.getUTCMinutes()).padStart(2, "0");
+    return `${{yyyy}}-${{mm}}-${{dd}} ${{hh}}:${{mi}}`;
+  }}
+
+  function drawBackground() {{
+    if (!bgCanvas) {{
+      bgCanvas = document.createElement("canvas");
+      bgCanvas.width = canvas.width;
+      bgCanvas.height = canvas.height;
+      bgCtx = bgCanvas.getContext("2d");
+      bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bgCtx.fillStyle = "#050505";
+      bgCtx.fillRect(0, 0, w, h);
+
+      bgCtx.fillStyle = "rgba(42,12,22,.35)";
+      bgCtx.strokeStyle = "rgba(176,96,126,.55)";
+      bgCtx.lineWidth = 1.15;
+      for (const ring of payload.outline) {{
+        if (!ring.length) continue;
+        bgCtx.beginPath();
+        ring.forEach(([lon, lat], i) => {{
+          const [x, y] = project(lon, lat);
+          if (i === 0) bgCtx.moveTo(x, y);
+          else bgCtx.lineTo(x, y);
+        }});
+        bgCtx.closePath();
+        bgCtx.fill();
+        bgCtx.stroke();
+      }}
+
+      bgCtx.fillStyle = "rgba(150,82,104,.20)";
+      for (let i = 0; i < 520; i++) {{
+        const lon = lonMin + (((i * 37) % 1000) / 1000) * (lonMax - lonMin);
+        const lat = latMin + (((i * 91) % 1000) / 1000) * (latMax - latMin);
+        const [x, y] = project(lon, lat);
+        bgCtx.fillRect(x, y, 1.1, 1.1);
+      }}
+      bgCtx.font = "13px system-ui, sans-serif";
+      bgCtx.fillStyle = "rgba(238,226,232,.76)";
+      for (const [name, lon, lat] of cities) {{
+        const [x, y] = project(lon, lat);
+        bgCtx.fillText(name, x + 6, y - 4);
+        bgCtx.beginPath();
+        bgCtx.arc(x, y, 2.2, 0, Math.PI * 2);
+        bgCtx.fill();
+      }}
+    }}
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(bgCanvas, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }}
+
+  function draw(now) {{
+    if (now - lastDraw < frameInterval) {{
+      requestAnimationFrame(draw);
+      return;
+    }}
+    lastDraw = now;
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    simT += dt * speed;
+    if (simT > payload.maxT) {{
+      simT = payload.minT;
+    }}
+    let activeIndices = activeSegmentIndices(simT);
+    if (activeIndices.length === 0) {{
+      const nextStart = nextSegmentStartAfter(simT);
+      simT = nextStart === null ? payload.minT : nextStart;
+      activeIndices = activeSegmentIndices(simT);
+    }}
+
+    drawBackground();
+
+    function drawTrailSegment(a, b) {{
+      const delay = Math.max(0, b.delay);
+      ctx.strokeStyle = delayColor(delay, delay <= 0.5 ? 0.22 : 0.78);
+      ctx.lineWidth = trailWidth(delay);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }}
+
+    function drawHead(head) {{
+      const delay = Math.max(0, head.delay);
+      const r = symbolRadius(delay);
+      ctx.fillStyle = delayColor(delay, delay <= 0.5 ? 0.58 : 0.92);
+      ctx.beginPath();
+      ctx.arc(head.x, head.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      if (delay > 0.5) {{
+        ctx.shadowColor = "rgba(255,40,40,.78)";
+        if (delayClass(delay) >= 75) {{
+          ctx.shadowBlur = delayClass(delay) >= 90 ? 24 : 17;
+          ctx.beginPath();
+          ctx.arc(head.x, head.y, r * 0.58, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }}
+      }}
+    }}
+
+    const classes = [0, 15, 30, 45, 75, 90];
+    const active = activeIndices.map(index => {{
+      const segment = segments[index];
+      const headGeo = segmentPosition(segment, simT);
+      const tailGeo = segmentPosition(segment, Math.max(segment.t0, simT - trailMinutes));
+      const [hx, hy] = project(headGeo.lon, headGeo.lat);
+      const [tx, ty] = project(tailGeo.lon, tailGeo.lat);
+      return {{
+        cls: delayClass(Math.max(0, headGeo.delay)),
+        tail: {{x: tx, y: ty, delay: tailGeo.delay}},
+        head: {{x: hx, y: hy, delay: headGeo.delay}},
+      }};
+    }});
+    const visible = active;
+
+    for (const cls of [45, 75, 90]) {{
+      for (const item of visible) {{
+        if (item.cls === cls) drawTrailSegment(item.tail, item.head);
+      }}
+    }}
+    for (const cls of classes) {{
+      for (const item of visible) {{
+        if (item.cls === cls) drawHead(item.head);
+      }}
+    }}
+
+    clock.textContent = formatSimTime(simT);
+    count.textContent = `${{active.length}} active · ${{visible.length}} drawn · ${{payload.segmentCount}} segments`;
+    requestAnimationFrame(draw);
+  }}
+
+  resize();
+  window.addEventListener("resize", resize);
+  requestAnimationFrame(draw);
+}})();
+</script>
+"""
+
+
+def main() -> None:
+    st.set_page_config(page_title="DB Delay Propagation", layout="wide")
+    st.title("Deutsche Bahn delay propagation")
+
+    with st.sidebar:
+        selected_day = st.date_input("Day", value=date(2026, 7, 1), min_value=date(2024, 7, 1))
+        exclude_bus = st.checkbox("Exclude Bus", value=True)
+        train_types = st.multiselect(
+            "Train types",
+            ["ICE", "IC", "EC", "RE", "RB", "S", "Bus"],
+            default=[],
+            help="Leave empty to include every train type after the Bus exclusion setting.",
+        )
+        top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
+
+    window_start = datetime.combine(selected_day, time.min)
+    window_end = window_start + timedelta(days=2)
+    needed_months = [(window_start.year, window_start.month)]
+    if next_month_start(window_start) < window_end:
+        needed_months.append((window_end.year, window_end.month))
+
+    with st.spinner("Loading monthly Parquet from Hugging Face cache..."):
+        parquet_paths = tuple(ensure_month_file(year, month) for year, month in needed_months)
+    with st.spinner("Filtering continuous 48h playback window..."):
+        day_df = load_time_window(parquet_paths, window_start, window_end, train_types, exclude_bus)
+
+    if day_df.is_empty():
+        st.warning("No rows found for this day and filter.")
+        return
+
+    with st.spinner("Loading station coordinates..."):
+        station_file = ensure_station_file()
+        day_df, matched_station_count = attach_coordinates(day_df, station_file)
+    with st.spinner("Loading Germany map outline..."):
+        outline = load_germany_outline(ensure_germany_geojson())
+
+    day_df = day_df.with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
+    with st.spinner("Building movement segments..."):
+        movement_segments, movement_stats, movement_issues = build_movement_segments(day_df, window_start, window_end)
+    train_run_count = day_df["train_line_ride_id"].n_unique()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rows in 48h window", f"{day_df.height:,}")
+    c2.metric("Train runs", f"{train_run_count:,}")
+    c3.metric("Max delay", f"{int(day_df['delay_in_min'].max())} min")
+    c4.metric("Mapped stations", f"{matched_station_count:,}")
+    st.caption(f"Playback window: {window_start:%Y-%m-%d %H:%M} -> {window_end:%Y-%m-%d %H:%M}; speed: 36 simulated minutes/second")
+
+    view = st.radio(
+        "View",
+        ["Moving trains", "Diagnostics", "Propagation charts", "Train run", "Data"],
+        horizontal=True,
+    )
+
+    if view == "Moving trains":
+        components.html(
+            make_train_flow_animation(movement_segments, window_start, window_end, outline),
+            height=800,
+            scrolling=False,
+        )
+    elif view == "Diagnostics":
+        with st.spinner("Building active segment audit..."):
+            active_segment_audit = build_active_segment_audit(movement_segments, window_start, window_end)
+            hourly_coverage = build_hourly_coverage(day_df, window_start, window_end)
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Rendered train runs", f"{movement_stats['rendered_train_runs']:,}")
+        d2.metric("Rendered points", f"{movement_stats['rendered_points']:,}")
+        d3.metric("Candidate train runs", f"{movement_stats['candidate_train_runs']:,}")
+        d4.metric("Candidate rows", f"{movement_stats['candidate_rows']:,}")
+
+        issue_rows = [
+            {"issue": key, "count": movement_stats[key]}
+            for key in ["non_monotonic_points", "short_segments", "long_segments", "single_point_runs", "no_valid_segment_runs"]
+        ]
+        st.dataframe(pl.DataFrame(issue_rows), use_container_width=True, hide_index=True)
+        st.subheader("Hourly loaded data coverage")
+        st.dataframe(hourly_coverage, use_container_width=True, hide_index=True)
+        st.subheader("15-minute active segment audit")
+        st.dataframe(active_segment_audit, use_container_width=True, hide_index=True)
+        if movement_issues.is_empty():
+            st.success("No segment-level timing issues found in the rendered movement data.")
+        else:
+            st.dataframe(movement_issues.head(500), use_container_width=True, hide_index=True)
+    elif view == "Propagation charts":
+        with st.spinner("Building chart summary..."):
+            summary = build_trip_summary(day_df)
+            top_trips = summary.head(top_n).with_row_index("first_order")
+            chart_df = day_df.join(
+                top_trips.select(["train_line_ride_id", "first_order"]),
+                on="train_line_ride_id",
+                how="left",
+            )
+        st.plotly_chart(make_hourly_chart(day_df), use_container_width=True)
+        st.plotly_chart(make_heatmap(chart_df, top_trips), use_container_width=True)
+    elif view == "Train run":
+        with st.spinner("Building train run summary..."):
+            summary = build_trip_summary(day_df)
+        if summary.is_empty():
+            st.warning("No train runs with at least three observed stops.")
+            return
+        top_trips = summary.head(top_n).with_row_index("first_order")
+        options = {
+            f"{r['train_type'] or ''} {r['train_number'] or ''} -> {r['destination'] or ''} | max {r['max_delay']} min | {r['train_line_ride_id']}": r[
+                "train_line_ride_id"
+            ]
+            for r in top_trips.to_dicts()
+        }
+        selected_label = st.selectbox("Inspect one train run", list(options.keys()))
+        st.plotly_chart(make_trip_map(day_df, options[selected_label]), use_container_width=True)
+        st.plotly_chart(make_trip_line(day_df, options[selected_label]), use_container_width=True)
+    elif view == "Data":
+        with st.spinner("Building data summary..."):
+            summary = build_trip_summary(day_df)
+            top_trips = summary.head(top_n).with_row_index("first_order")
+        st.dataframe(
+            top_trips.select(
+                [
+                    "train_type",
+                    "train_number",
+                    "line_number",
+                    "destination",
+                    "first_seen",
+                    "last_seen",
+                    "station_count",
+                    "max_delay",
+                    "mean_delay",
+                    "arrival_cancelled",
+                    "departure_cancelled",
+                    "train_line_ride_id",
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+if __name__ == "__main__":
+    main()
