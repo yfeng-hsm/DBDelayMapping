@@ -34,6 +34,26 @@ MAX_SEGMENT_SPEED_KMH = 380
 MIN_SPEED_CHECK_DISTANCE_KM = 15
 PREPARED_WINDOW_CACHE_VERSION = "prepared-v1"
 MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v5"
+DELAY_CLASS_COLORS = {
+    "0": "#f5f7ff",
+    "15": "#f6d8df",
+    "30": "#f8b9bf",
+    "45": "#f99a9f",
+    "75": "#fb5d60",
+    "90": "#fd3e40",
+    "105": "#fe1f20",
+    "120+": "#ff0000",
+}
+DELAY_CLASS_DIAMETERS = {
+    "0": 2.2,
+    "15": 2.6,
+    "30": 4.2,
+    "45": 7.0,
+    "75": 12.0,
+    "90": 16.0,
+    "105": 18.0,
+    "120+": 20.0,
+}
 
 
 REQUIRED_COLUMNS = [
@@ -329,9 +349,16 @@ def load_or_build_movement_segments(
     return segments, stats, issues, "computed"
 
 
+def add_service_day(df: pl.DataFrame) -> pl.DataFrame:
+    if "service_day" in df.columns:
+        return df
+    return df.with_columns(pl.col("time").dt.date().alias("service_day"))
+
+
 def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
+    day_df = add_service_day(day_df)
     return (
-        day_df.group_by("train_line_ride_id")
+        day_df.group_by(["train_line_ride_id", "service_day"])
         .agg(
             pl.col("train_type").drop_nulls().first().alias("train_type"),
             pl.col("train_number").drop_nulls().first().alias("train_number"),
@@ -351,16 +378,21 @@ def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
 
 
 def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
-    selected_ids = top_trips["train_line_ride_id"].to_list()
+    df = add_service_day(df)
+    selected_runs = top_trips.select(["train_line_ride_id", "service_day", "first_order"])
     plot_df = (
-        df.filter(pl.col("train_line_ride_id").is_in(selected_ids))
+        df.join(selected_runs, on=["train_line_ride_id", "service_day"], how="inner")
         .with_columns(
             (
-                pl.col("train_type").fill_null("")
+                pl.col("service_day").dt.strftime("%Y-%m-%d")
+                + pl.lit(" | ")
+                + pl.col("train_type").fill_null("")
                 + pl.lit(" ")
                 + pl.col("train_number").fill_null("")
                 + pl.lit(" -> ")
                 + pl.col("final_destination_station").fill_null("")
+                + pl.lit(" | ")
+                + pl.col("train_line_ride_id").cast(pl.Utf8).str.slice(0, 8)
             ).alias("train_label")
         )
         .sort(["first_order", "train_line_station_num"])
@@ -391,13 +423,14 @@ def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
             "delay_in_min": "Delay (min)",
         },
     )
-    fig.update_layout(height=max(520, 22 * max(1, len(selected_ids))), margin=dict(l=20, r=20, t=60, b=30))
+    fig.update_layout(height=max(520, 22 * max(1, top_trips.height)), margin=dict(l=20, r=20, t=60, b=30))
     return fig
 
 
-def make_trip_line(df: pl.DataFrame, ride_id: str) -> go.Figure:
+def make_trip_line(df: pl.DataFrame, ride_id: str, service_day: date) -> go.Figure:
+    df = add_service_day(df)
     trip = (
-        df.filter(pl.col("train_line_ride_id") == ride_id)
+        df.filter((pl.col("train_line_ride_id") == ride_id) & (pl.col("service_day") == service_day))
         .sort("train_line_station_num")
         .with_columns(
             pl.when(pl.col("station_name").is_null())
@@ -412,18 +445,20 @@ def make_trip_line(df: pl.DataFrame, ride_id: str) -> go.Figure:
         str(pdf["train_number"].dropna().iloc[0]) if pdf["train_number"].notna().any() else "",
     ]
     title = " ".join(part for part in title_parts if part).strip() or ride_id
+    marker_colors = [delay_symbol_color(value) for value in pdf["delay_in_min"]]
+    marker_sizes = [delay_symbol_diameter(value) for value in pdf["delay_in_min"]]
     fig = px.line(
         pdf,
         x="train_line_station_num",
         y="delay_in_min",
         markers=True,
         hover_name="station_label",
-        hover_data=["time", "final_destination_station", "arrival_is_canceled", "departure_is_canceled"],
-        title=f"{title}: delay along route",
+        hover_data=["service_day", "time", "final_destination_station", "arrival_is_canceled", "departure_is_canceled"],
+        title=f"{service_day:%Y-%m-%d} | {title}: delay along route",
         labels={"train_line_station_num": "Stop sequence", "delay_in_min": "Delay (min)"},
     )
     fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="gray")
-    fig.update_traces(marker=dict(size=8))
+    fig.update_traces(marker=dict(size=marker_sizes, color=marker_colors, line=dict(width=0)))
     fig.update_layout(height=420, margin=dict(l=20, r=20, t=60, b=30))
     return fig
 
@@ -613,9 +648,10 @@ def make_delay_map(df: pl.DataFrame, bin_minutes: int, min_delay: int) -> go.Fig
     return style_delay_geo(fig, "Delay diffusion map with fading trail")
 
 
-def make_trip_map(df: pl.DataFrame, ride_id: str) -> go.Figure:
+def make_trip_map(df: pl.DataFrame, ride_id: str, service_day: date) -> go.Figure:
+    df = add_service_day(df)
     trip = (
-        df.filter(pl.col("train_line_ride_id") == ride_id)
+        df.filter((pl.col("train_line_ride_id") == ride_id) & (pl.col("service_day") == service_day))
         .filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
         .sort("train_line_station_num")
     )
@@ -633,28 +669,27 @@ def make_trip_map(df: pl.DataFrame, ride_id: str) -> go.Figure:
         ]
         if part
     ).strip()
-    delays = pdf["delay_in_min"].clip(lower=0)
+    pdf["delay_class"] = [delay_class_value(max(0.0, float(value))) for value in pdf["delay_in_min"]]
+    pdf["symbol_color"] = [delay_symbol_color(value) for value in pdf["delay_in_min"]]
+    pdf["symbol_size"] = [delay_symbol_diameter(value) for value in pdf["delay_in_min"]]
     fig.add_trace(
         go.Scattergeo(
             lat=pdf["lat"],
             lon=pdf["lon"],
             mode="lines+markers",
-            line=dict(width=2, color="rgba(255,60,60,0.75)"),
+            line=dict(width=2, color="rgba(170,195,210,0.58)"),
             marker=dict(
-                size=(delays.clip(1, 45) + 6),
-                color=pdf["delay_in_min"],
-                colorscale="Reds",
-                cmin=0,
-                cmax=max(20, int(pdf["delay_in_min"].quantile(0.95))),
+                size=pdf["symbol_size"],
+                color=pdf["symbol_color"],
                 opacity=0.82,
-                colorbar=dict(title="delay"),
+                line=dict(width=0),
             ),
             text=pdf["station_name"],
-            customdata=pdf[["train_line_station_num", "delay_in_min", "time"]].to_numpy(),
-            hovertemplate="<b>%{text}</b><br>Stop %{customdata[0]}<br>Delay %{customdata[1]} min<br>%{customdata[2]}<extra></extra>",
+            customdata=pdf[["train_line_station_num", "delay_in_min", "delay_class", "time"]].to_numpy(),
+            hovertemplate="<b>%{text}</b><br>Stop %{customdata[0]}<br>Delay %{customdata[1]} min<br>Class %{customdata[2]} min<br>%{customdata[3]}<extra></extra>",
         )
     )
-    return style_delay_geo(fig, f"{label or ride_id}: route delay trace", height=620)
+    return style_delay_geo(fig, f"{service_day:%Y-%m-%d} | {label or ride_id}: route delay trace", height=620)
 
 
 def build_movement_segments(
@@ -862,6 +897,16 @@ def delay_class_value(delay: float) -> str:
     if delay < 120:
         return "105"
     return "120+"
+
+
+def delay_symbol_color(delay: object) -> str:
+    value = 0.0 if delay is None else float(delay)
+    return DELAY_CLASS_COLORS[delay_class_value(max(0.0, value))]
+
+
+def delay_symbol_diameter(delay: object) -> float:
+    value = 0.0 if delay is None else float(delay)
+    return DELAY_CLASS_DIAMETERS[delay_class_value(max(0.0, value))]
 
 
 def build_active_segment_audit(
@@ -1293,7 +1338,6 @@ def main() -> None:
 
     with st.sidebar:
         selected_day = st.date_input("Day", value=date(2026, 7, 1), min_value=date(2024, 7, 1))
-        top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
 
     view = st.radio(
         "View",
@@ -1321,7 +1365,7 @@ def main() -> None:
         st.warning("No rows found for this day and filter.")
         return
 
-    day_df = day_df.with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
+    day_df = add_service_day(day_df).with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
 
     movement_segments: list[dict[str, object]] = []
     movement_stats: dict[str, int] = {}
@@ -1387,39 +1431,45 @@ def main() -> None:
         else:
             st.dataframe(movement_issues.head(500), use_container_width=True, hide_index=True)
     elif view == "Propagation charts":
+        top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
         with st.spinner("Building chart summary..."):
             summary = build_trip_summary(day_df)
             top_trips = summary.head(top_n).with_row_index("first_order")
-            chart_df = day_df.join(
-                top_trips.select(["train_line_ride_id", "first_order"]),
-                on="train_line_ride_id",
-                how="left",
-            )
         st.plotly_chart(make_hourly_chart(day_df), use_container_width=True)
-        st.plotly_chart(make_heatmap(chart_df, top_trips), use_container_width=True)
+        st.plotly_chart(make_heatmap(day_df, top_trips), use_container_width=True)
     elif view == "Train run":
         with st.spinner("Building train run summary..."):
             summary = build_trip_summary(day_df)
         if summary.is_empty():
             st.warning("No train runs with at least three observed stops.")
             return
-        top_trips = summary.head(top_n).with_row_index("first_order")
+        run_days = summary.select("service_day").unique().sort("service_day")["service_day"].to_list()
+        selected_run_day = st.selectbox(
+            "Run day",
+            run_days,
+            format_func=lambda value: value.strftime("%Y-%m-%d"),
+        )
+        day_summary = summary.filter(pl.col("service_day") == selected_run_day)
         options = {
-            f"{r['train_type'] or ''} {r['train_number'] or ''} -> {r['destination'] or ''} | max {r['max_delay']} min | {r['train_line_ride_id']}": r[
-                "train_line_ride_id"
-            ]
-            for r in top_trips.to_dicts()
+            f"{r['service_day']:%Y-%m-%d} | {r['train_type'] or ''} {r['train_number'] or ''} -> {r['destination'] or ''} | max {r['max_delay']} min | {r['train_line_ride_id']}": (
+                r["train_line_ride_id"],
+                r["service_day"],
+            )
+            for r in day_summary.to_dicts()
         }
         selected_label = st.selectbox("Inspect one train run", list(options.keys()))
-        st.plotly_chart(make_trip_map(day_df, options[selected_label]), use_container_width=True)
-        st.plotly_chart(make_trip_line(day_df, options[selected_label]), use_container_width=True)
+        selected_ride_id, selected_service_day = options[selected_label]
+        st.plotly_chart(make_trip_map(day_df, selected_ride_id, selected_service_day), use_container_width=True)
+        st.plotly_chart(make_trip_line(day_df, selected_ride_id, selected_service_day), use_container_width=True)
     elif view == "Data":
+        rows_shown = st.slider("Rows shown", 20, 500, 100, 20)
         with st.spinner("Building data summary..."):
             summary = build_trip_summary(day_df)
-            top_trips = summary.head(top_n).with_row_index("first_order")
+            top_trips = summary.head(rows_shown).with_row_index("first_order")
         st.dataframe(
             top_trips.select(
                 [
+                    "service_day",
                     "train_type",
                     "train_number",
                     "line_number",
