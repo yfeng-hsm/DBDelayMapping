@@ -26,6 +26,7 @@ GERMANY_GEOJSON_URL = (
     "https://raw.githubusercontent.com/isellsoap/deutschlandGeoJSON/main/2_bundeslaender/1_sehr_hoch.geo.json"
 )
 GERMANY_GEOJSON = CACHE_DIR / "germany-states.geo.json"
+FERN_TYPES = ("ICE", "IC", "EC", "ECE", "TGV", "RJ", "RJX", "NJ", "EN", "FLX")
 
 
 REQUIRED_COLUMNS = [
@@ -161,7 +162,7 @@ def next_month_start(dt: datetime) -> datetime:
 
 @st.cache_data(show_spinner=False)
 def load_time_window(
-    paths: tuple[str, ...], start: datetime, end: datetime, train_types: list[str], exclude_bus: bool
+    paths: tuple[str, ...], start: datetime, end: datetime
 ) -> pl.DataFrame:
     event_time_expr = pl.col("time").alias("event_time")
     scans = []
@@ -175,10 +176,7 @@ def load_time_window(
             .filter(pl.col("train_line_station_num").is_not_null())
             .filter(pl.col("delay_in_min").is_not_null())
         )
-        if train_types:
-            scan = scan.filter(pl.col("train_type").is_in(train_types))
-        elif exclude_bus:
-            scan = scan.filter(pl.col("train_type").fill_null("") != "Bus")
+        scan = scan.filter(pl.col("train_type").fill_null("") != "Bus")
         scans.append(scan)
 
     if not scans:
@@ -630,6 +628,7 @@ def build_movement_segments(
             pl.col("departure_planned_time").sort_by("event_time").drop_nulls().last().alias("departure_planned_time"),
             pl.col("lat").sort_by("event_time").first().alias("lat"),
             pl.col("lon").sort_by("event_time").first().alias("lon"),
+            pl.col("train_type").sort_by("event_time").drop_nulls().first().alias("train_type"),
         )
         .with_columns(
             pl.when(pl.col("arrival_time").is_not_null() & pl.col("arrival_planned_time").is_not_null())
@@ -654,6 +653,10 @@ def build_movement_segments(
             pl.coalesce(["arrival_delay", "first_delay", "departure_delay", "last_delay"]).alias(
                 "segment_end_delay"
             ),
+            pl.when(pl.col("train_type").is_in(FERN_TYPES))
+            .then(pl.lit("fern"))
+            .otherwise(pl.lit("regional"))
+            .alias("train_category"),
         )
         .sort(["train_line_ride_id", "trip_instance", "train_line_station_num", "first_event_time"])
     )
@@ -693,8 +696,9 @@ def build_movement_segments(
             pl.col("next_lat").round(4).alias("lat1"),
             pl.col("segment_start_delay").fill_null(0).round(0).cast(pl.Int32).alias("d0"),
             pl.col("next_arrival_delay").fill_null(0).round(0).cast(pl.Int32).alias("d1"),
+            pl.col("train_category").alias("cat"),
         )
-        .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1"])
+        .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1", "cat"])
     )
     dwell_segments_df = (
         stops.with_columns((pl.col("segment_start_time") - pl.col("segment_end_time")).dt.total_minutes().alias("dwell_min"))
@@ -708,8 +712,9 @@ def build_movement_segments(
             pl.col("lat").round(4).alias("lat1"),
             pl.col("segment_end_delay").fill_null(0).round(0).cast(pl.Int32).alias("d0"),
             pl.col("segment_start_delay").fill_null(0).round(0).cast(pl.Int32).alias("d1"),
+            pl.col("train_category").alias("cat"),
         )
-        .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1"])
+        .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1", "cat"])
     )
     segments_df = pl.concat([travel_segments_df, dwell_segments_df]).sort("t0")
     issue_df = (
@@ -821,10 +826,11 @@ def make_train_flow_animation(
 <div id="train-flow-root" style="height:780px;background:#050505;color:#f3edf0;position:relative;overflow:hidden;border:1px solid #241820">
   <canvas id="train-flow-canvas" style="width:100%;height:100%;display:block"></canvas>
   <div style="position:absolute;left:24px;top:18px;font:600 15px system-ui, sans-serif;letter-spacing:.02em">Moving train delay flow</div>
-  <label style="position:absolute;left:24px;top:46px;display:flex;align-items:center;gap:8px;font:13px system-ui, sans-serif;color:#d8cbd1;background:rgba(5,5,5,.60);padding:6px 8px;border:1px solid #2b1b23">
-    <input id="train-flow-under-30" type="checkbox" checked style="accent-color:#ff5f55">
-    <span>show &lt;30 min</span>
-  </label>
+  <div style="position:absolute;left:24px;top:46px;display:flex;align-items:center;gap:10px;font:13px system-ui, sans-serif;color:#d8cbd1;background:rgba(5,5,5,.60);padding:6px 8px;border:1px solid #2b1b23">
+    <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-fern" type="checkbox" checked style="accent-color:#ff5f55"><span>Fernverkehr</span></label>
+    <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-regional" type="checkbox" checked style="accent-color:#ff5f55"><span>Regionalverkehr</span></label>
+    <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-under-30" type="checkbox" checked style="accent-color:#ff5f55"><span>&lt;30 min</span></label>
+  </div>
   <div id="train-flow-clock" style="position:absolute;right:28px;top:20px;font:700 28px ui-monospace, SFMono-Regular, Menlo, monospace;color:#fff"></div>
   <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#bdaeb5"></div>
   <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#d8cbd1;background:rgba(5,5,5,.70);padding:12px 14px;border:1px solid #3b2630;min-width:132px">
@@ -845,6 +851,8 @@ def make_train_flow_animation(
   const ctx = canvas.getContext("2d");
   const clock = document.getElementById("train-flow-clock");
   const count = document.getElementById("train-flow-count");
+  const fernToggle = document.getElementById("train-flow-fern");
+  const regionalToggle = document.getElementById("train-flow-regional");
   const under30Toggle = document.getElementById("train-flow-under-30");
   const cities = [
     ["Hamburg", 10.00, 53.55], ["Berlin", 13.40, 52.52], ["Hannover", 9.73, 52.37],
@@ -858,6 +866,8 @@ def make_train_flow_animation(
   let simT = payload.minT;
   let last = performance.now();
   let lastDraw = 0;
+  let showFern = fernToggle.checked;
+  let showRegional = regionalToggle.checked;
   let showUnder30 = under30Toggle.checked;
   const speed = 36;
   const bucketSize = 5;
@@ -1096,12 +1106,16 @@ def make_train_flow_animation(
       const [hx, hy] = project(headGeo.lon, headGeo.lat);
       const [tx, ty] = project(tailGeo.lon, tailGeo.lat);
       return {{
+        cat: segment.cat || "regional",
         cls: delayClass(Math.max(0, headGeo.delay)),
         tail: {{x: tx, y: ty, delay: tailGeo.delay}},
         head: {{x: hx, y: hy, delay: headGeo.delay}},
       }};
     }});
-    const visible = active.filter(item => showUnder30 || item.cls >= 30);
+    const visible = active.filter(item => {{
+      const trainTypeVisible = (item.cat === "fern" && showFern) || (item.cat === "regional" && showRegional);
+      return trainTypeVisible && (showUnder30 || item.cls >= 30);
+    }});
 
     for (const cls of [45, 75, 90]) {{
       for (const item of visible) {{
@@ -1121,6 +1135,12 @@ def make_train_flow_animation(
 
   resize();
   window.addEventListener("resize", resize);
+  fernToggle.addEventListener("change", () => {{
+    showFern = fernToggle.checked;
+  }});
+  regionalToggle.addEventListener("change", () => {{
+    showRegional = regionalToggle.checked;
+  }});
   under30Toggle.addEventListener("change", () => {{
     showUnder30 = under30Toggle.checked;
   }});
@@ -1136,13 +1156,6 @@ def main() -> None:
 
     with st.sidebar:
         selected_day = st.date_input("Day", value=date(2026, 7, 1), min_value=date(2024, 7, 1))
-        exclude_bus = st.checkbox("Exclude Bus", value=True)
-        train_types = st.multiselect(
-            "Train types",
-            ["ICE", "IC", "EC", "RE", "RB", "S", "Bus"],
-            default=[],
-            help="Leave empty to include every train type after the Bus exclusion setting.",
-        )
         top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
 
     window_start = datetime.combine(selected_day, time.min)
@@ -1154,7 +1167,7 @@ def main() -> None:
     with st.spinner("Loading monthly Parquet from Hugging Face cache..."):
         parquet_paths = tuple(ensure_month_file(year, month) for year, month in needed_months)
     with st.spinner("Filtering continuous 48h playback window..."):
-        day_df = load_time_window(parquet_paths, window_start, window_end, train_types, exclude_bus)
+        day_df = load_time_window(parquet_paths, window_start, window_end)
 
     if day_df.is_empty():
         st.warning("No rows found for this day and filter.")
