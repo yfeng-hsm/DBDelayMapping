@@ -880,13 +880,13 @@ def make_train_flow_animation(
   <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#cbd7df;background:rgba(2,6,9,.76);padding:12px 14px;border:1px solid #2e404b;min-width:132px">
     <div style="margin-bottom:8px;color:#eef3f8">Delay class</div>
     <div style="display:flex;align-items:center;gap:9px;height:22px"><span style="width:3px;height:3px;border-radius:50%;background:#f5f7ff;display:inline-block"></span><span>0 min</span></div>
-    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:3px;height:3px;border-radius:50%;background:#ffb7b0;display:inline-block"></span><span>15 min</span></div>
-    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:4px;height:4px;border-radius:50%;background:#ff9288;display:inline-block"></span><span>30 min</span></div>
-    <div style="display:flex;align-items:center;gap:8px;height:26px"><span style="width:7px;height:7px;border-radius:50%;background:#ff6b5f;display:inline-block"></span><span>45 min</span></div>
-    <div style="display:flex;align-items:center;gap:7px;height:30px"><span style="width:12px;height:12px;border-radius:50%;background:#ff3f34;display:inline-block;box-shadow:0 0 8px rgba(255,63,52,.55)"></span><span>75 min</span></div>
-    <div style="display:flex;align-items:center;gap:6px;height:34px"><span style="width:16px;height:16px;border-radius:50%;background:#ff0000;display:inline-block;box-shadow:0 0 12px rgba(255,0,0,.75)"></span><span>90 min</span></div>
-    <div style="display:flex;align-items:center;gap:5px;height:36px"><span style="width:18px;height:18px;border-radius:50%;background:#ff2020;display:inline-block;box-shadow:0 0 13px rgba(255,32,32,.72)"></span><span>105 min</span></div>
-    <div style="display:flex;align-items:center;gap:4px;height:38px"><span style="width:20px;height:20px;border-radius:50%;background:#ff4040;display:inline-block;box-shadow:0 0 14px rgba(255,64,64,.70)"></span><span>120+ min</span></div>
+    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:3px;height:3px;border-radius:50%;background:#f6d8df;display:inline-block"></span><span>15 min</span></div>
+    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:4px;height:4px;border-radius:50%;background:#f8b9bf;display:inline-block"></span><span>30 min</span></div>
+    <div style="display:flex;align-items:center;gap:8px;height:26px"><span style="width:7px;height:7px;border-radius:50%;background:#f99a9f;display:inline-block"></span><span>45 min</span></div>
+    <div style="display:flex;align-items:center;gap:7px;height:30px"><span style="width:12px;height:12px;border-radius:50%;background:#fb5d60;display:inline-block;box-shadow:0 0 8px rgba(251,93,96,.55)"></span><span>75 min</span></div>
+    <div style="display:flex;align-items:center;gap:6px;height:34px"><span style="width:16px;height:16px;border-radius:50%;background:#fd3e40;display:inline-block;box-shadow:0 0 12px rgba(253,62,64,.72)"></span><span>90 min</span></div>
+    <div style="display:flex;align-items:center;gap:5px;height:36px"><span style="width:18px;height:18px;border-radius:50%;background:#fe1f20;display:inline-block;box-shadow:0 0 13px rgba(254,31,32,.74)"></span><span>105 min</span></div>
+    <div style="display:flex;align-items:center;gap:4px;height:38px"><span style="width:20px;height:20px;border-radius:50%;background:#ff0000;display:inline-block;box-shadow:0 0 14px rgba(255,0,0,.78)"></span><span>120+ min</span></div>
   </div>
 </div>
 <script>
@@ -999,13 +999,13 @@ def make_train_flow_animation(
 
   function classColor(cls) {{
     if (cls === 0) return [245, 247, 255];
-    if (cls === 15) return [255, 183, 176];
-    if (cls === 30) return [255, 146, 136];
-    if (cls === 45) return [255, 107, 95];
-    if (cls === 75) return [255, 63, 52];
-    if (cls === 90) return [255, 0, 0];
-    if (cls === 105) return [255, 32, 32];
-    return [255, 64, 64];
+    if (cls === 15) return [246, 216, 223];
+    if (cls === 30) return [248, 185, 191];
+    if (cls === 45) return [249, 154, 159];
+    if (cls === 75) return [251, 93, 96];
+    if (cls === 90) return [253, 62, 64];
+    if (cls === 105) return [254, 31, 32];
+    return [255, 0, 0];
   }}
 
   function delayClass(delay) {{
