@@ -1534,15 +1534,22 @@ def main() -> None:
             filtered_issues = issues
             if selected_issue_type != "All":
                 filtered_issues = issues.filter(pl.col("issue_type") == selected_issue_type)
-            selected_issue_number = st.number_input(
+            issue_options = filtered_issues.to_dicts()
+            issue_labels = {
+                int(issue["issue_rank"]): (
+                    f"{int(issue['issue_rank']) + 1}. {issue['issue_type']} | "
+                    f"{issue['station_name']} -> {issue['next_station_name']} | "
+                    f"gap {issue['gap_min']:.1f} min | speed {issue['speed_kmh']:.1f} km/h"
+                )
+                for issue in issue_options
+            }
+            selected_issue_rank = st.selectbox(
                 "Diagnostic issue rank",
-                min_value=1,
-                max_value=max(1, filtered_issues.height),
-                value=1,
-                step=1,
-                key=f"diagnostic-issue-rank-{selected_issue_type}",
+                list(issue_labels.keys()),
+                format_func=lambda value: issue_labels[value],
+                key=f"diagnostic-issue-rank-select-{selected_issue_type}",
             )
-            selected_issue = filtered_issues.row(int(selected_issue_number) - 1, named=True)
+            selected_issue = next(issue for issue in issue_options if int(issue["issue_rank"]) == selected_issue_rank)
             st.caption(
                 f"{selected_issue['issue_type']} | {selected_issue['service_day']} #{selected_issue['trip_instance']} | "
                 f"{selected_issue['station_name']} -> {selected_issue['next_station_name']} | "
