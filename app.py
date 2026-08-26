@@ -736,7 +736,11 @@ def delay_class_value(delay: float) -> str:
         return "45"
     if delay < 90:
         return "75"
-    return "90+"
+    if delay < 105:
+        return "90"
+    if delay < 120:
+        return "105"
+    return "120+"
 
 
 def build_active_segment_audit(
@@ -745,7 +749,7 @@ def build_active_segment_audit(
     rows = []
     max_minute = int((window_end - window_start).total_seconds() // 60)
     for minute in range(0, max_minute + 1, 15):
-        counts = {"0": 0, "15": 0, "30": 0, "45": 0, "75": 0, "90+": 0}
+        counts = {"0": 0, "15": 0, "30": 0, "45": 0, "75": 0, "90": 0, "105": 0, "120+": 0}
         active_segments = 0
         for segment in segments:
             if segment["t0"] <= minute < segment["t1"]:
@@ -763,7 +767,9 @@ def build_active_segment_audit(
                 "delay_30": counts["30"],
                 "delay_45": counts["45"],
                 "delay_75": counts["75"],
-                "delay_90_plus": counts["90+"],
+                "delay_90": counts["90"],
+                "delay_105": counts["105"],
+                "delay_120_plus": counts["120+"],
             }
         )
     return pl.DataFrame(rows)
@@ -834,13 +840,15 @@ def make_train_flow_animation(
   <div id="train-flow-clock" style="position:absolute;right:28px;top:20px;font:700 28px ui-monospace, SFMono-Regular, Menlo, monospace;color:#fff"></div>
   <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#bdaeb5"></div>
   <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#d8cbd1;background:rgba(5,5,5,.70);padding:12px 14px;border:1px solid #3b2630;min-width:132px">
-    <div style="margin-bottom:8px;color:#f3edf0">delay symbol</div>
+    <div style="margin-bottom:8px;color:#f3edf0">Delay class</div>
     <div style="display:flex;align-items:center;gap:9px;height:22px"><span style="width:3px;height:3px;border-radius:50%;background:#f5f7ff;display:inline-block"></span><span>0 min</span></div>
     <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:3px;height:3px;border-radius:50%;background:#ffb4ad;display:inline-block"></span><span>15 min</span></div>
     <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:4px;height:4px;border-radius:50%;background:#ff8b81;display:inline-block"></span><span>30 min</span></div>
     <div style="display:flex;align-items:center;gap:7px;height:28px"><span style="width:13px;height:13px;border-radius:50%;background:#ff5f55;display:inline-block"></span><span>45 min</span></div>
     <div style="display:flex;align-items:center;gap:6px;height:32px"><span style="width:18px;height:18px;border-radius:50%;background:#ff352f;display:inline-block;box-shadow:0 0 9px rgba(255,53,47,.55)"></span><span>75 min</span></div>
-    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#ff1512;display:inline-block;box-shadow:0 0 14px rgba(255,21,18,.75)"></span><span>90+ min</span></div>
+    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#ff1512;display:inline-block;box-shadow:0 0 14px rgba(255,21,18,.75)"></span><span>90 min</span></div>
+    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#d80000;display:inline-block;box-shadow:0 0 14px rgba(216,0,0,.75)"></span><span>105 min</span></div>
+    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#a00000;display:inline-block;box-shadow:0 0 14px rgba(160,0,0,.75)"></span><span>120+ min</span></div>
   </div>
 </div>
 <script>
@@ -957,7 +965,9 @@ def make_train_flow_animation(
     if (cls === 30) return [255, 139, 129];
     if (cls === 45) return [255, 95, 85];
     if (cls === 75) return [255, 53, 47];
-    return [255, 21, 18];
+    if (cls === 90) return [255, 21, 18];
+    if (cls === 105) return [216, 0, 0];
+    return [160, 0, 0];
   }}
 
   function delayClass(delay) {{
@@ -966,7 +976,9 @@ def make_train_flow_animation(
     if (delay < 45) return 30;
     if (delay < 75) return 45;
     if (delay < 90) return 75;
-    return 90;
+    if (delay < 105) return 90;
+    if (delay < 120) return 105;
+    return 120;
   }}
 
   function symbolRadius(delay) {{
@@ -986,6 +998,8 @@ def make_train_flow_animation(
     if (cls === 30) return 1.2;
     if (cls === 45) return 2.0;
     if (cls === 75) return 2.8;
+    if (cls === 90) return 3.7;
+    if (cls === 105) return 3.7;
     return 3.7;
   }}
 
@@ -1098,7 +1112,7 @@ def make_train_flow_animation(
       }}
     }}
 
-    const classes = [0, 15, 30, 45, 75, 90];
+    const classes = [0, 15, 30, 45, 75, 90, 105, 120];
     const active = activeIndices.map(index => {{
       const segment = segments[index];
       const headGeo = segmentPosition(segment, simT);
@@ -1117,7 +1131,7 @@ def make_train_flow_animation(
       return trainTypeVisible && (showUnder30 || item.cls >= 30);
     }});
 
-    for (const cls of [45, 75, 90]) {{
+    for (const cls of [45, 75, 90, 105, 120]) {{
       for (const item of visible) {{
         if (item.cls === cls) drawTrailSegment(item.tail, item.head);
       }}
