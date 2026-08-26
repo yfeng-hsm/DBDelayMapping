@@ -21,6 +21,8 @@ BASE_URL = os.getenv(
 )
 CACHE_DIR = Path("/app/data/cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+DERIVED_CACHE_DIR = CACHE_DIR / "derived"
+DERIVED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 STATION_TGZ_URL = "https://registry.npmjs.org/db-hafas-stations/-/db-hafas-stations-2.0.0.tgz"
 STATION_NDJSON = CACHE_DIR / "db-hafas-stations-full.ndjson"
 GERMANY_GEOJSON_URL = (
@@ -30,6 +32,8 @@ GERMANY_GEOJSON = CACHE_DIR / "germany-states.geo.json"
 FERN_TYPES = ("ICE", "IC", "EC", "ECE", "TGV", "RJ", "RJX", "NJ", "EN", "FLX")
 MAX_SEGMENT_SPEED_KMH = 380
 MIN_SPEED_CHECK_DISTANCE_KM = 15
+PREPARED_WINDOW_CACHE_VERSION = "prepared-v1"
+MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v5"
 
 
 REQUIRED_COLUMNS = [
@@ -244,6 +248,85 @@ def attach_coordinates(day_df: pl.DataFrame, station_file: str) -> tuple[pl.Data
     joined = with_eva.join(coord_df, on="eva_norm", how="left")
     matched = joined.filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())["eva_norm"].n_unique()
     return joined, matched
+
+
+def window_cache_stem(window_start: datetime, window_end: datetime) -> str:
+    return f"{window_start:%Y%m%d%H%M}-{window_end:%Y%m%d%H%M}"
+
+
+def prepared_window_cache_path(window_start: datetime, window_end: datetime) -> Path:
+    stem = window_cache_stem(window_start, window_end)
+    return DERIVED_CACHE_DIR / f"{PREPARED_WINDOW_CACHE_VERSION}-{stem}.parquet"
+
+
+def movement_cache_paths(window_start: datetime, window_end: datetime) -> dict[str, Path]:
+    stem = window_cache_stem(window_start, window_end)
+    prefix = DERIVED_CACHE_DIR / f"{MOVEMENT_SEGMENT_CACHE_VERSION}-{stem}"
+    return {
+        "segments": prefix.with_suffix(".segments.parquet"),
+        "stats": prefix.with_suffix(".stats.json"),
+        "issues": prefix.with_suffix(".issues.parquet"),
+    }
+
+
+@st.cache_data(show_spinner=False)
+def load_prepared_window(
+    parquet_paths: tuple[str, ...], station_file: str, window_start: datetime, window_end: datetime
+) -> tuple[pl.DataFrame, int, str]:
+    cache_path = prepared_window_cache_path(window_start, window_end)
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        df = pl.read_parquet(cache_path)
+        matched = df.filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())["eva_norm"].n_unique()
+        return df, matched, "disk cache"
+
+    df = load_time_window(parquet_paths, window_start, window_end)
+    if df.is_empty():
+        return df, 0, "source parquet"
+
+    df, matched = attach_coordinates(df, station_file)
+    tmp = cache_path.with_suffix(".part")
+    df.write_parquet(tmp)
+    tmp.replace(cache_path)
+    return df, matched, "source parquet"
+
+
+def load_or_build_movement_segments(
+    day_df: pl.DataFrame, window_start: datetime, window_end: datetime
+) -> tuple[list[dict[str, object]], dict[str, int], pl.DataFrame, str]:
+    paths = movement_cache_paths(window_start, window_end)
+    if all(path.exists() and path.stat().st_size > 0 for path in paths.values()):
+        segments_df = pl.read_parquet(paths["segments"])
+        with paths["stats"].open("r", encoding="utf-8") as handle:
+            stats = json.load(handle)
+        issues = pl.read_parquet(paths["issues"])
+        return segments_df.to_dicts(), {key: int(value) for key, value in stats.items()}, issues, "disk cache"
+
+    segments, stats, issues = build_movement_segments(day_df, window_start, window_end)
+    segments_df = pl.DataFrame(
+        segments,
+        schema={
+            "t0": pl.Float64,
+            "t1": pl.Float64,
+            "lon0": pl.Float64,
+            "lat0": pl.Float64,
+            "lon1": pl.Float64,
+            "lat1": pl.Float64,
+            "d0": pl.Int64,
+            "d1": pl.Int64,
+            "cat": pl.Utf8,
+        },
+    )
+    tmp_segments = paths["segments"].with_suffix(".segments.part")
+    tmp_stats = paths["stats"].with_suffix(".stats.part")
+    tmp_issues = paths["issues"].with_suffix(".issues.part")
+    segments_df.write_parquet(tmp_segments)
+    issues.write_parquet(tmp_issues)
+    with tmp_stats.open("w", encoding="utf-8") as handle:
+        json.dump({key: int(value) for key, value in stats.items()}, handle)
+    tmp_segments.replace(paths["segments"])
+    tmp_issues.replace(paths["issues"])
+    tmp_stats.replace(paths["stats"])
+    return segments, stats, issues, "computed"
 
 
 def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
@@ -1220,22 +1303,25 @@ def main() -> None:
 
     with st.spinner("Loading monthly Parquet from Hugging Face cache..."):
         parquet_paths = tuple(ensure_month_file(year, month) for year, month in needed_months)
-    with st.spinner("Filtering continuous 48h playback window..."):
-        day_df = load_time_window(parquet_paths, window_start, window_end)
+    with st.spinner("Preparing station coordinate file..."):
+        station_file = ensure_station_file()
+    with st.spinner("Loading prepared 48h playback window..."):
+        day_df, matched_station_count, prepared_source = load_prepared_window(
+            parquet_paths, station_file, window_start, window_end
+        )
 
     if day_df.is_empty():
         st.warning("No rows found for this day and filter.")
         return
 
-    with st.spinner("Loading station coordinates..."):
-        station_file = ensure_station_file()
-        day_df, matched_station_count = attach_coordinates(day_df, station_file)
     with st.spinner("Loading Germany map outline..."):
         outline = load_germany_outline(ensure_germany_geojson())
 
     day_df = day_df.with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
     with st.spinner("Building movement segments..."):
-        movement_segments, movement_stats, movement_issues = build_movement_segments(day_df, window_start, window_end)
+        movement_segments, movement_stats, movement_issues, movement_source = load_or_build_movement_segments(
+            day_df, window_start, window_end
+        )
     train_run_count = day_df["train_line_ride_id"].n_unique()
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1243,7 +1329,10 @@ def main() -> None:
     c2.metric("Train runs", f"{train_run_count:,}")
     c3.metric("Max delay", f"{int(day_df['delay_in_min'].max())} min")
     c4.metric("Mapped stations", f"{matched_station_count:,}")
-    st.caption(f"Playback window: {window_start:%Y-%m-%d %H:%M} -> {window_end:%Y-%m-%d %H:%M}; speed: 36 simulated minutes/second")
+    st.caption(
+        f"Playback window: {window_start:%Y-%m-%d %H:%M} -> {window_end:%Y-%m-%d %H:%M}; "
+        f"speed: 36 simulated minutes/second; prepared data: {prepared_source}; movement: {movement_source}"
+    )
 
     view = st.radio(
         "View",
