@@ -847,8 +847,8 @@ def make_train_flow_animation(
     <div style="display:flex;align-items:center;gap:7px;height:28px"><span style="width:13px;height:13px;border-radius:50%;background:#ff5f55;display:inline-block"></span><span>45 min</span></div>
     <div style="display:flex;align-items:center;gap:6px;height:32px"><span style="width:18px;height:18px;border-radius:50%;background:#ff352f;display:inline-block;box-shadow:0 0 9px rgba(255,53,47,.55)"></span><span>75 min</span></div>
     <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#ff1512;display:inline-block;box-shadow:0 0 14px rgba(255,21,18,.75)"></span><span>90 min</span></div>
-    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#d80000;display:inline-block;box-shadow:0 0 14px rgba(216,0,0,.75)"></span><span>105 min</span></div>
-    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#a00000;display:inline-block;box-shadow:0 0 14px rgba(160,0,0,.75)"></span><span>120+ min</span></div>
+    <div style="display:flex;align-items:center;gap:5px;height:38px"><span style="width:26px;height:26px;border-radius:50%;background:#d80000;display:inline-block;box-shadow:0 0 15px rgba(216,0,0,.75)"></span><span>105 min</span></div>
+    <div style="display:flex;align-items:center;gap:4px;height:40px"><span style="width:28px;height:28px;border-radius:50%;background:#a00000;display:inline-block;box-shadow:0 0 16px rgba(160,0,0,.75)"></span><span>120+ min</span></div>
   </div>
 </div>
 <script>
@@ -988,7 +988,9 @@ def make_train_flow_animation(
     if (cls === 30) return 2.1;
     if (cls === 45) return 6.4;
     if (cls === 75) return 8.8;
-    return 11.8;
+    if (cls === 90) return 11.8;
+    if (cls === 105) return 12.8;
+    return 13.8;
   }}
 
   function trailWidth(delay) {{
