@@ -377,24 +377,24 @@ def style_delay_geo(fig: go.Figure, title: str, height: int = 780) -> go.Figure:
         lataxis_range=[47.0, 55.6],
         lonaxis_range=[5.2, 15.6],
         showland=True,
-        landcolor="#090909",
+        landcolor="#071016",
         showocean=True,
-        oceancolor="#050505",
+        oceancolor="#020609",
         showlakes=False,
         showcountries=True,
-        countrycolor="#50313b",
+        countrycolor="#536572",
         showsubunits=True,
-        subunitcolor="#2f2228",
-        coastlinecolor="#50313b",
-        bgcolor="#050505",
+        subunitcolor="#26333c",
+        coastlinecolor="#536572",
+        bgcolor="#020609",
         projection_type="mercator",
     )
     fig.update_layout(
         title=title,
         height=height,
-        paper_bgcolor="#050505",
-        plot_bgcolor="#050505",
-        font=dict(color="#f2edf0"),
+        paper_bgcolor="#020609",
+        plot_bgcolor="#020609",
+        font=dict(color="#eef3f8"),
         margin=dict(l=0, r=0, t=50, b=0),
     )
     return fig
@@ -867,26 +867,26 @@ def make_train_flow_animation(
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
     return f"""
-<div id="train-flow-root" style="height:780px;background:#050505;color:#f3edf0;position:relative;overflow:hidden;border:1px solid #241820">
+<div id="train-flow-root" style="height:780px;background:#020609;color:#eef3f8;position:relative;overflow:hidden;border:1px solid #182630">
   <canvas id="train-flow-canvas" style="width:100%;height:100%;display:block"></canvas>
   <div style="position:absolute;left:24px;top:18px;font:600 15px system-ui, sans-serif;letter-spacing:.02em">Moving train delay flow</div>
-  <div style="position:absolute;left:24px;top:46px;display:flex;align-items:center;gap:10px;font:13px system-ui, sans-serif;color:#d8cbd1;background:rgba(5,5,5,.60);padding:6px 8px;border:1px solid #2b1b23">
+  <div style="position:absolute;left:24px;top:46px;display:flex;align-items:center;gap:10px;font:13px system-ui, sans-serif;color:#cbd7df;background:rgba(2,6,9,.64);padding:6px 8px;border:1px solid #24343e">
     <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-fern" type="checkbox" checked style="accent-color:#ff5f55"><span>Fernverkehr</span></label>
     <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-regional" type="checkbox" checked style="accent-color:#ff5f55"><span>Regionalverkehr</span></label>
     <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-under-30" type="checkbox" checked style="accent-color:#ff5f55"><span>&lt;30 min</span></label>
   </div>
   <div id="train-flow-clock" style="position:absolute;right:28px;top:20px;font:700 28px ui-monospace, SFMono-Regular, Menlo, monospace;color:#fff"></div>
-  <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#bdaeb5"></div>
-  <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#d8cbd1;background:rgba(5,5,5,.70);padding:12px 14px;border:1px solid #3b2630;min-width:132px">
-    <div style="margin-bottom:8px;color:#f3edf0">Delay class</div>
+  <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#aebdc6"></div>
+  <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#cbd7df;background:rgba(2,6,9,.76);padding:12px 14px;border:1px solid #2e404b;min-width:132px">
+    <div style="margin-bottom:8px;color:#eef3f8">Delay class</div>
     <div style="display:flex;align-items:center;gap:9px;height:22px"><span style="width:3px;height:3px;border-radius:50%;background:#f5f7ff;display:inline-block"></span><span>0 min</span></div>
-    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:3px;height:3px;border-radius:50%;background:#ffb4ad;display:inline-block"></span><span>15 min</span></div>
-    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:4px;height:4px;border-radius:50%;background:#ff8b81;display:inline-block"></span><span>30 min</span></div>
-    <div style="display:flex;align-items:center;gap:7px;height:28px"><span style="width:13px;height:13px;border-radius:50%;background:#ff5f55;display:inline-block"></span><span>45 min</span></div>
-    <div style="display:flex;align-items:center;gap:6px;height:32px"><span style="width:18px;height:18px;border-radius:50%;background:#ff352f;display:inline-block;box-shadow:0 0 9px rgba(255,53,47,.55)"></span><span>75 min</span></div>
-    <div style="display:flex;align-items:center;gap:6px;height:36px"><span style="width:24px;height:24px;border-radius:50%;background:#ff1512;display:inline-block;box-shadow:0 0 14px rgba(255,21,18,.75)"></span><span>90 min</span></div>
-    <div style="display:flex;align-items:center;gap:5px;height:38px"><span style="width:26px;height:26px;border-radius:50%;background:#d80000;display:inline-block;box-shadow:0 0 15px rgba(216,0,0,.75)"></span><span>105 min</span></div>
-    <div style="display:flex;align-items:center;gap:4px;height:40px"><span style="width:28px;height:28px;border-radius:50%;background:#a00000;display:inline-block;box-shadow:0 0 16px rgba(160,0,0,.75)"></span><span>120+ min</span></div>
+    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:3px;height:3px;border-radius:50%;background:#ffb7b0;display:inline-block"></span><span>15 min</span></div>
+    <div style="display:flex;align-items:center;gap:9px;height:24px"><span style="width:4px;height:4px;border-radius:50%;background:#ff9288;display:inline-block"></span><span>30 min</span></div>
+    <div style="display:flex;align-items:center;gap:8px;height:26px"><span style="width:7px;height:7px;border-radius:50%;background:#ff6b5f;display:inline-block"></span><span>45 min</span></div>
+    <div style="display:flex;align-items:center;gap:7px;height:30px"><span style="width:12px;height:12px;border-radius:50%;background:#ff3f34;display:inline-block;box-shadow:0 0 8px rgba(255,63,52,.55)"></span><span>75 min</span></div>
+    <div style="display:flex;align-items:center;gap:6px;height:34px"><span style="width:16px;height:16px;border-radius:50%;background:#ff0000;display:inline-block;box-shadow:0 0 12px rgba(255,0,0,.75)"></span><span>90 min</span></div>
+    <div style="display:flex;align-items:center;gap:5px;height:36px"><span style="width:18px;height:18px;border-radius:50%;background:#ff2020;display:inline-block;box-shadow:0 0 13px rgba(255,32,32,.72)"></span><span>105 min</span></div>
+    <div style="display:flex;align-items:center;gap:4px;height:38px"><span style="width:20px;height:20px;border-radius:50%;background:#ff4040;display:inline-block;box-shadow:0 0 14px rgba(255,64,64,.70)"></span><span>120+ min</span></div>
   </div>
 </div>
 <script>
@@ -999,13 +999,13 @@ def make_train_flow_animation(
 
   function classColor(cls) {{
     if (cls === 0) return [245, 247, 255];
-    if (cls === 15) return [255, 180, 173];
-    if (cls === 30) return [255, 139, 129];
-    if (cls === 45) return [255, 95, 85];
-    if (cls === 75) return [255, 53, 47];
-    if (cls === 90) return [255, 21, 18];
-    if (cls === 105) return [216, 0, 0];
-    return [160, 0, 0];
+    if (cls === 15) return [255, 183, 176];
+    if (cls === 30) return [255, 146, 136];
+    if (cls === 45) return [255, 107, 95];
+    if (cls === 75) return [255, 63, 52];
+    if (cls === 90) return [255, 0, 0];
+    if (cls === 105) return [255, 32, 32];
+    return [255, 64, 64];
   }}
 
   function delayClass(delay) {{
@@ -1021,14 +1021,14 @@ def make_train_flow_animation(
 
   function symbolRadius(delay) {{
     const cls = delayClass(delay);
-    if (cls === 0) return 1.35;
-    if (cls === 15) return 1.55;
+    if (cls === 0) return 1.1;
+    if (cls === 15) return 1.3;
     if (cls === 30) return 2.1;
-    if (cls === 45) return 6.4;
-    if (cls === 75) return 8.8;
-    if (cls === 90) return 11.8;
-    if (cls === 105) return 12.8;
-    return 13.8;
+    if (cls === 45) return 3.5;
+    if (cls === 75) return 6.0;
+    if (cls === 90) return 8.0;
+    if (cls === 105) return 9.0;
+    return 10.0;
   }}
 
   function trailWidth(delay) {{
@@ -1061,11 +1061,11 @@ def make_train_flow_animation(
       bgCanvas.height = canvas.height;
       bgCtx = bgCanvas.getContext("2d");
       bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      bgCtx.fillStyle = "#050505";
+      bgCtx.fillStyle = "#020609";
       bgCtx.fillRect(0, 0, w, h);
 
-      bgCtx.fillStyle = "rgba(42,12,22,.35)";
-      bgCtx.strokeStyle = "rgba(176,96,126,.55)";
+      bgCtx.fillStyle = "rgba(7,16,22,.68)";
+      bgCtx.strokeStyle = "rgba(86,105,118,.62)";
       bgCtx.lineWidth = 1.15;
       for (const ring of payload.outline) {{
         if (!ring.length) continue;
@@ -1080,7 +1080,7 @@ def make_train_flow_animation(
         bgCtx.stroke();
       }}
 
-      bgCtx.fillStyle = "rgba(150,82,104,.20)";
+      bgCtx.fillStyle = "rgba(82,112,130,.20)";
       for (let i = 0; i < 520; i++) {{
         const lon = lonMin + (((i * 37) % 1000) / 1000) * (lonMax - lonMin);
         const lat = latMin + (((i * 91) % 1000) / 1000) * (latMax - latMin);
@@ -1088,7 +1088,7 @@ def make_train_flow_animation(
         bgCtx.fillRect(x, y, 1.1, 1.1);
       }}
       bgCtx.font = "13px system-ui, sans-serif";
-      bgCtx.fillStyle = "rgba(238,226,232,.76)";
+      bgCtx.fillStyle = "rgba(228,236,242,.78)";
       for (const [name, lon, lat] of cities) {{
         const [x, y] = project(lon, lat);
         bgCtx.fillText(name, x + 6, y - 4);
