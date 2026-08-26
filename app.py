@@ -617,29 +617,65 @@ def build_movement_segments(
     if base.is_empty():
         return [], stats, pl.DataFrame()
 
-    ordered = (
+    stops = (
         base.group_by(["train_line_ride_id", "trip_instance", "train_line_station_num"])
         .agg(
-            pl.col("event_time").min().alias("event_time"),
-            pl.col("lat").first().alias("lat"),
-            pl.col("lon").first().alias("lon"),
-            pl.col("delay_in_min").max().alias("delay"),
+            pl.col("event_time").min().alias("first_event_time"),
+            pl.col("event_time").max().alias("last_event_time"),
+            pl.col("delay_in_min").sort_by("event_time").first().alias("first_delay"),
+            pl.col("delay_in_min").sort_by("event_time").last().alias("last_delay"),
+            pl.col("arrival_change_time").sort_by("event_time").drop_nulls().first().alias("arrival_time"),
+            pl.col("departure_change_time").sort_by("event_time").drop_nulls().last().alias("departure_time"),
+            pl.col("arrival_planned_time").sort_by("event_time").drop_nulls().first().alias("arrival_planned_time"),
+            pl.col("departure_planned_time").sort_by("event_time").drop_nulls().last().alias("departure_planned_time"),
+            pl.col("lat").sort_by("event_time").first().alias("lat"),
+            pl.col("lon").sort_by("event_time").first().alias("lon"),
         )
-        .sort(["train_line_ride_id", "trip_instance", "train_line_station_num", "event_time"])
+        .with_columns(
+            pl.when(pl.col("arrival_time").is_not_null() & pl.col("arrival_planned_time").is_not_null())
+            .then((pl.col("arrival_time") - pl.col("arrival_planned_time")).dt.total_minutes())
+            .otherwise(None)
+            .alias("arrival_delay"),
+            pl.when(pl.col("departure_time").is_not_null() & pl.col("departure_planned_time").is_not_null())
+            .then((pl.col("departure_time") - pl.col("departure_planned_time")).dt.total_minutes())
+            .otherwise(None)
+            .alias("departure_delay"),
+        )
+        .with_columns(
+            pl.coalesce(["departure_time", "last_event_time", "arrival_time", "first_event_time"]).alias(
+                "segment_start_time"
+            ),
+            pl.coalesce(["departure_delay", "last_delay", "arrival_delay", "first_delay"]).alias(
+                "segment_start_delay"
+            ),
+            pl.coalesce(["arrival_time", "first_event_time", "departure_time", "last_event_time"]).alias(
+                "segment_end_time"
+            ),
+            pl.coalesce(["arrival_delay", "first_delay", "departure_delay", "last_delay"]).alias(
+                "segment_end_delay"
+            ),
+        )
+        .sort(["train_line_ride_id", "trip_instance", "train_line_station_num", "first_event_time"])
     )
-    stats["rendered_points"] = ordered.height
-    run_sizes = ordered.group_by(["train_line_ride_id", "trip_instance"]).agg(pl.len().alias("points"))
+    stats["rendered_points"] = stops.height
+    run_sizes = stops.group_by(["train_line_ride_id", "trip_instance"]).agg(pl.len().alias("points"))
     stats["single_point_runs"] = run_sizes.filter(pl.col("points") < 2).height
 
     pairs = (
-        ordered.with_columns(
-            pl.col("event_time").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_event_time"),
+        stops.with_columns(
+            pl.col("segment_end_time")
+            .shift(-1)
+            .over(["train_line_ride_id", "trip_instance"])
+            .alias("next_arrival_time"),
+            pl.col("segment_end_delay")
+            .shift(-1)
+            .over(["train_line_ride_id", "trip_instance"])
+            .alias("next_arrival_delay"),
             pl.col("lat").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_lat"),
             pl.col("lon").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_lon"),
-            pl.col("delay").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_delay"),
         )
-        .filter(pl.col("next_event_time").is_not_null())
-        .with_columns((pl.col("next_event_time") - pl.col("event_time")).dt.total_minutes().alias("gap_min"))
+        .filter(pl.col("next_arrival_time").is_not_null())
+        .with_columns((pl.col("next_arrival_time") - pl.col("segment_start_time")).dt.total_minutes().alias("gap_min"))
     )
     stats["short_segments"] = pairs.filter(pl.col("gap_min") < 2).height
     stats["long_segments"] = pairs.filter(pl.col("gap_min") > 360).height
@@ -649,20 +685,20 @@ def build_movement_segments(
 
     segments_df = (
         valid.with_columns(
-            ((pl.col("event_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t0"),
-            ((pl.col("next_event_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t1"),
+            ((pl.col("segment_start_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t0"),
+            ((pl.col("next_arrival_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t1"),
             pl.col("lon").round(4).alias("lon0"),
             pl.col("lat").round(4).alias("lat0"),
             pl.col("next_lon").round(4).alias("lon1"),
             pl.col("next_lat").round(4).alias("lat1"),
-            pl.col("delay").fill_null(0).cast(pl.Int32).alias("d0"),
-            pl.col("next_delay").fill_null(0).cast(pl.Int32).alias("d1"),
+            pl.col("segment_start_delay").fill_null(0).round(0).cast(pl.Int32).alias("d0"),
+            pl.col("next_arrival_delay").fill_null(0).round(0).cast(pl.Int32).alias("d1"),
         )
         .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1"])
     )
     issue_df = (
         pairs.filter((pl.col("gap_min") < 2) | (pl.col("gap_min") > 360))
-        .select(["train_line_ride_id", "trip_instance", "event_time", "next_event_time", "gap_min"])
+        .select(["train_line_ride_id", "trip_instance", "segment_start_time", "next_arrival_time", "gap_min"])
         .head(500)
     )
     return segments_df.to_dicts(), stats, issue_df
@@ -691,7 +727,7 @@ def build_active_segment_audit(
         counts = {"0": 0, "15": 0, "30": 0, "45": 0, "75": 0, "90+": 0}
         active_segments = 0
         for segment in segments:
-            if segment["t0"] <= minute <= segment["t1"]:
+            if segment["t0"] <= minute < segment["t1"]:
                 span = max(0.001, segment["t1"] - segment["t0"])
                 u = (minute - segment["t0"]) / span
                 delay = segment["d0"] + (segment["d1"] - segment["d0"]) * u
@@ -857,23 +893,6 @@ def make_train_flow_animation(
     return [x, y];
   }}
 
-  function positionAt(train, t) {{
-    const pts = train.points;
-    if (t < pts[0].t || t > pts[pts.length - 1].t) return null;
-    for (let i = 0; i < pts.length - 1; i++) {{
-      const a = pts[i], b = pts[i + 1];
-      if (t >= a.t && t <= b.t) {{
-        const span = Math.max(0.001, b.t - a.t);
-        const u = (t - a.t) / span;
-        const lon = a.lon + (b.lon - a.lon) * u;
-        const lat = a.lat + (b.lat - a.lat) * u;
-        const delay = a.delay + (b.delay - a.delay) * u;
-        return {{lon, lat, delay, label: train.label}};
-      }}
-    }}
-    return null;
-  }}
-
   function segmentPosition(segment, t) {{
     const span = Math.max(0.001, segment.t1 - segment.t0);
     const u = Math.max(0, Math.min(1, (t - segment.t0) / span));
@@ -887,7 +906,7 @@ def make_train_flow_animation(
     const bucket = Math.max(0, Math.min(buckets.length - 1, Math.floor(t / bucketSize)));
     return buckets[bucket].filter(index => {{
       const segment = segments[index];
-      return t >= segment.t0 && t <= segment.t1;
+      return t >= segment.t0 && t < segment.t1;
     }});
   }}
 
