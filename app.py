@@ -1295,6 +1295,13 @@ def main() -> None:
         selected_day = st.date_input("Day", value=date(2026, 7, 1), min_value=date(2024, 7, 1))
         top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
 
+    view = st.radio(
+        "View",
+        ["Moving trains", "Diagnostics", "Propagation charts", "Train run", "Data"],
+        horizontal=True,
+    )
+    needs_movement = view in {"Moving trains", "Diagnostics"}
+
     window_start = datetime.combine(selected_day, time.min)
     window_end = window_start + timedelta(days=2)
     needed_months = [(window_start.year, window_start.month)]
@@ -1314,14 +1321,23 @@ def main() -> None:
         st.warning("No rows found for this day and filter.")
         return
 
-    with st.spinner("Loading Germany map outline..."):
-        outline = load_germany_outline(ensure_germany_geojson())
-
     day_df = day_df.with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
-    with st.spinner("Building movement segments..."):
-        movement_segments, movement_stats, movement_issues, movement_source = load_or_build_movement_segments(
-            day_df, window_start, window_end
-        )
+
+    movement_segments: list[dict[str, object]] = []
+    movement_stats: dict[str, int] = {}
+    movement_issues = pl.DataFrame()
+    movement_source = "not loaded"
+    if needs_movement:
+        with st.spinner("Building movement segments..."):
+            movement_segments, movement_stats, movement_issues, movement_source = load_or_build_movement_segments(
+                day_df, window_start, window_end
+            )
+
+    outline: list[list[list[float]]] = []
+    if view == "Moving trains":
+        with st.spinner("Loading Germany map outline..."):
+            outline = load_germany_outline(ensure_germany_geojson())
+
     train_run_count = day_df["train_line_ride_id"].n_unique()
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1332,12 +1348,6 @@ def main() -> None:
     st.caption(
         f"Playback window: {window_start:%Y-%m-%d %H:%M} -> {window_end:%Y-%m-%d %H:%M}; "
         f"speed: 36 simulated minutes/second; prepared data: {prepared_source}; movement: {movement_source}"
-    )
-
-    view = st.radio(
-        "View",
-        ["Moving trains", "Diagnostics", "Propagation charts", "Train run", "Data"],
-        horizontal=True,
     )
 
     if view == "Moving trains":
