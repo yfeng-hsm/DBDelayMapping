@@ -355,10 +355,37 @@ def add_service_day(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(pl.col("time").dt.date().alias("service_day"))
 
 
-def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
-    day_df = add_service_day(day_df)
+def add_trip_instance(df: pl.DataFrame) -> pl.DataFrame:
+    df = add_service_day(df)
+    if "trip_instance" in df.columns:
+        return df
+    group_keys = ["train_line_ride_id", "service_day"]
     return (
-        day_df.group_by(["train_line_ride_id", "service_day"])
+        df.sort([*group_keys, "time", "train_line_station_num"])
+        .with_columns(
+            pl.col("train_line_station_num").shift(1).over(group_keys).alias("_prev_station_num"),
+            pl.col("time").shift(1).over(group_keys).alias("_prev_event_time"),
+        )
+        .with_columns(
+            pl.when(pl.col("_prev_event_time").is_null())
+            .then(1)
+            .when(pl.col("train_line_station_num") < pl.col("_prev_station_num"))
+            .then(1)
+            .when((pl.col("time") - pl.col("_prev_event_time")).dt.total_minutes() > 480)
+            .then(1)
+            .otherwise(0)
+            .cum_sum()
+            .over(group_keys)
+            .alias("trip_instance")
+        )
+        .drop(["_prev_station_num", "_prev_event_time"])
+    )
+
+
+def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
+    day_df = add_trip_instance(day_df)
+    return (
+        day_df.group_by(["train_line_ride_id", "service_day", "trip_instance"])
         .agg(
             pl.col("train_type").drop_nulls().first().alias("train_type"),
             pl.col("train_number").drop_nulls().first().alias("train_number"),
@@ -378,10 +405,10 @@ def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
 
 
 def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
-    df = add_service_day(df)
-    selected_runs = top_trips.select(["train_line_ride_id", "service_day", "first_order"])
+    df = add_trip_instance(df)
+    selected_runs = top_trips.select(["train_line_ride_id", "service_day", "trip_instance", "first_order"])
     plot_df = (
-        df.join(selected_runs, on=["train_line_ride_id", "service_day"], how="inner")
+        df.join(selected_runs, on=["train_line_ride_id", "service_day", "trip_instance"], how="inner")
         .with_columns(
             (
                 pl.col("service_day").dt.strftime("%Y-%m-%d")
@@ -393,6 +420,8 @@ def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
                 + pl.col("final_destination_station").fill_null("")
                 + pl.lit(" | ")
                 + pl.col("train_line_ride_id").cast(pl.Utf8).str.slice(0, 8)
+                + pl.lit("#")
+                + pl.col("trip_instance").cast(pl.Utf8)
             ).alias("train_label")
         )
         .sort(["first_order", "train_line_station_num"])
@@ -427,10 +456,14 @@ def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
     return fig
 
 
-def make_trip_line(df: pl.DataFrame, ride_id: str, service_day: date) -> go.Figure:
-    df = add_service_day(df)
+def make_trip_line(df: pl.DataFrame, ride_id: str, service_day: date, trip_instance: int) -> go.Figure:
+    df = add_trip_instance(df)
     trip = (
-        df.filter((pl.col("train_line_ride_id") == ride_id) & (pl.col("service_day") == service_day))
+        df.filter(
+            (pl.col("train_line_ride_id") == ride_id)
+            & (pl.col("service_day") == service_day)
+            & (pl.col("trip_instance") == trip_instance)
+        )
         .sort("train_line_station_num")
         .with_columns(
             pl.when(pl.col("station_name").is_null())
@@ -454,7 +487,7 @@ def make_trip_line(df: pl.DataFrame, ride_id: str, service_day: date) -> go.Figu
         markers=True,
         hover_name="station_label",
         hover_data=["service_day", "time", "final_destination_station", "arrival_is_canceled", "departure_is_canceled"],
-        title=f"{service_day:%Y-%m-%d} | {title}: delay along route",
+        title=f"{service_day:%Y-%m-%d} #{trip_instance} | {title}: delay along route",
         labels={"train_line_station_num": "Stop sequence", "delay_in_min": "Delay (min)"},
     )
     fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="gray")
@@ -648,10 +681,14 @@ def make_delay_map(df: pl.DataFrame, bin_minutes: int, min_delay: int) -> go.Fig
     return style_delay_geo(fig, "Delay diffusion map with fading trail")
 
 
-def make_trip_map(df: pl.DataFrame, ride_id: str, service_day: date) -> go.Figure:
-    df = add_service_day(df)
+def make_trip_map(df: pl.DataFrame, ride_id: str, service_day: date, trip_instance: int) -> go.Figure:
+    df = add_trip_instance(df)
     trip = (
-        df.filter((pl.col("train_line_ride_id") == ride_id) & (pl.col("service_day") == service_day))
+        df.filter(
+            (pl.col("train_line_ride_id") == ride_id)
+            & (pl.col("service_day") == service_day)
+            & (pl.col("trip_instance") == trip_instance)
+        )
         .filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
         .sort("train_line_station_num")
     )
@@ -689,7 +726,7 @@ def make_trip_map(df: pl.DataFrame, ride_id: str, service_day: date) -> go.Figur
             hovertemplate="<b>%{text}</b><br>Stop %{customdata[0]}<br>Delay %{customdata[1]} min<br>Class %{customdata[2]} min<br>%{customdata[3]}<extra></extra>",
         )
     )
-    return style_delay_geo(fig, f"{service_day:%Y-%m-%d} | {label or ride_id}: route delay trace", height=620)
+    return style_delay_geo(fig, f"{service_day:%Y-%m-%d} #{trip_instance} | {label or ride_id}: route delay trace", height=620)
 
 
 def build_movement_segments(
@@ -1365,7 +1402,7 @@ def main() -> None:
         st.warning("No rows found for this day and filter.")
         return
 
-    day_df = add_service_day(day_df).with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
+    day_df = add_trip_instance(day_df).with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
 
     movement_segments: list[dict[str, object]] = []
     movement_stats: dict[str, int] = {}
@@ -1451,27 +1488,43 @@ def main() -> None:
             key=f"train-run-day-{selected_day:%Y-%m-%d}",
         )
         day_summary = summary.filter(pl.col("service_day") == selected_run_day)
-        options = {
-            f"{r['service_day']:%Y-%m-%d} | {r['train_type'] or ''} {r['train_number'] or ''} -> {r['destination'] or ''} | max {r['max_delay']} min | {r['train_line_ride_id']}": (
-                r["train_line_ride_id"],
-                r["service_day"],
+        option_rows = []
+        option_labels = {}
+        for r in day_summary.to_dicts():
+            run_key = f"{r['service_day']:%Y-%m-%d}::{r['trip_instance']}::{r['train_line_ride_id']}"
+            option_rows.append(
+                {
+                    "key": run_key,
+                    "train_line_ride_id": r["train_line_ride_id"],
+                    "service_day": r["service_day"],
+                    "trip_instance": int(r["trip_instance"]),
+                }
             )
-            for r in day_summary.to_dicts()
-        }
-        selected_label = st.selectbox(
+            option_labels[run_key] = (
+                f"{r['service_day']:%Y-%m-%d} #{r['trip_instance']} | "
+                f"{r['train_type'] or ''} {r['train_number'] or ''} -> {r['destination'] or ''} | "
+                f"max {r['max_delay']} min | {r['train_line_ride_id']}"
+            )
+        options = {row["key"]: row for row in option_rows}
+        selected_key = st.selectbox(
             "Inspect one train run",
-            list(options.keys()),
-            key=f"train-run-choice-{selected_run_day:%Y-%m-%d}",
+            [row["key"] for row in option_rows],
+            format_func=lambda value: option_labels[value],
+            key=f"train-run-choice-v2-{selected_run_day:%Y-%m-%d}",
         )
-        selected_ride_id, selected_service_day = options[selected_label]
-        chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_ride_id}"
+        selected_run = options[selected_key]
+        selected_ride_id = selected_run["train_line_ride_id"]
+        selected_service_day = selected_run["service_day"]
+        selected_trip_instance = selected_run["trip_instance"]
+        st.caption(f"Selected: {option_labels[selected_key]}")
+        chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_trip_instance}-{selected_ride_id}"
         st.plotly_chart(
-            make_trip_map(day_df, selected_ride_id, selected_service_day),
+            make_trip_map(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
             use_container_width=True,
             key=f"train-run-map-{chart_key}",
         )
         st.plotly_chart(
-            make_trip_line(day_df, selected_ride_id, selected_service_day),
+            make_trip_line(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
             use_container_width=True,
             key=f"train-run-line-{chart_key}",
         )
@@ -1484,6 +1537,7 @@ def main() -> None:
             top_trips.select(
                 [
                     "service_day",
+                    "trip_instance",
                     "train_type",
                     "train_number",
                     "line_number",
