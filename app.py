@@ -33,7 +33,11 @@ FERN_TYPES = ("ICE", "IC", "EC", "ECE", "TGV", "RJ", "RJX", "NJ", "EN", "FLX")
 MAX_SEGMENT_SPEED_KMH = 380
 MIN_SPEED_CHECK_DISTANCE_KM = 15
 PREPARED_WINDOW_CACHE_VERSION = "prepared-v1"
-MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v5"
+MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v7"
+GERMANY_LON_MIN = 5.2
+GERMANY_LON_MAX = 15.6
+GERMANY_LAT_MIN = 47.0
+GERMANY_LAT_MAX = 55.6
 DELAY_CLASS_COLORS = {
     "0": "#f5f7ff",
     "15": "#f6d8df",
@@ -382,6 +386,13 @@ def add_trip_instance(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def in_germany_bbox_expr() -> pl.Expr:
+    return (
+        pl.col("lon").is_between(GERMANY_LON_MIN, GERMANY_LON_MAX)
+        & pl.col("lat").is_between(GERMANY_LAT_MIN, GERMANY_LAT_MAX)
+    )
+
+
 def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
     day_df = add_trip_instance(day_df)
     return (
@@ -525,8 +536,8 @@ def style_delay_geo(fig: go.Figure, title: str, height: int = 780) -> go.Figure:
     fig.update_geos(
         visible=True,
         resolution=50,
-        lataxis_range=[47.0, 55.6],
-        lonaxis_range=[5.2, 15.6],
+        lataxis_range=[GERMANY_LAT_MIN, GERMANY_LAT_MAX],
+        lonaxis_range=[GERMANY_LON_MIN, GERMANY_LON_MAX],
         showland=True,
         landcolor="#071016",
         showocean=True,
@@ -683,7 +694,7 @@ def make_delay_map(df: pl.DataFrame, bin_minutes: int, min_delay: int) -> go.Fig
 
 def make_trip_map(df: pl.DataFrame, ride_id: str, service_day: date, trip_instance: int) -> go.Figure:
     df = add_trip_instance(df)
-    trip = (
+    trip_all = (
         df.filter(
             (pl.col("train_line_ride_id") == ride_id)
             & (pl.col("service_day") == service_day)
@@ -692,9 +703,10 @@ def make_trip_map(df: pl.DataFrame, ride_id: str, service_day: date, trip_instan
         .filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
         .sort("train_line_station_num")
     )
+    trip = trip_all.filter(in_germany_bbox_expr())
     fig = go.Figure()
     if trip.is_empty():
-        fig.update_layout(title="No coordinates found for this train run")
+        fig.update_layout(title="No coordinates inside Germany map bounds for this train run")
         return fig
 
     pdf = trip.to_pandas()
@@ -726,40 +738,74 @@ def make_trip_map(df: pl.DataFrame, ride_id: str, service_day: date, trip_instan
             hovertemplate="<b>%{text}</b><br>Stop %{customdata[0]}<br>Delay %{customdata[1]} min<br>Class %{customdata[2]} min<br>%{customdata[3]}<extra></extra>",
         )
     )
+    outside_count = trip_all.height - trip.height
+    if outside_count > 0:
+        fig.add_annotation(
+            text=f"{outside_count} stops outside Germany map bounds hidden",
+            xref="paper",
+            yref="paper",
+            x=0.01,
+            y=0.02,
+            showarrow=False,
+            font=dict(size=12, color="#cbd7df"),
+            bgcolor="rgba(2,6,9,.70)",
+            bordercolor="#2e404b",
+        )
     return style_delay_geo(fig, f"{service_day:%Y-%m-%d} #{trip_instance} | {label or ride_id}: route delay trace", height=620)
+
+
+def make_issue_segment_map(issue: dict[str, object]) -> go.Figure:
+    fig = go.Figure()
+    lat = issue.get("lat")
+    lon = issue.get("lon")
+    next_lat = issue.get("next_lat")
+    next_lon = issue.get("next_lon")
+    if any(value is None for value in [lat, lon, next_lat, next_lon]):
+        fig.update_layout(title="No coordinates found for this diagnostic segment")
+        return fig
+
+    station_name = str(issue.get("station_name") or "from")
+    next_station_name = str(issue.get("next_station_name") or "to")
+    fig.add_trace(
+        go.Scattergeo(
+            lat=[lat, next_lat],
+            lon=[lon, next_lon],
+            mode="lines+markers+text",
+            text=[station_name, next_station_name],
+            textposition=["top center", "bottom center"],
+            line=dict(width=4, color="#ff0000"),
+            marker=dict(size=[11, 13], color=["#f8b9bf", "#ff0000"], line=dict(width=0)),
+            customdata=[
+                [issue.get("segment_start_time"), issue.get("gap_min"), issue.get("distance_km"), issue.get("speed_kmh")],
+                [issue.get("next_arrival_time"), issue.get("gap_min"), issue.get("distance_km"), issue.get("speed_kmh")],
+            ],
+            hovertemplate="<b>%{text}</b><br>%{customdata[0]}<br>Gap %{customdata[1]:.1f} min<br>Distance %{customdata[2]:.1f} km<br>Speed %{customdata[3]:.1f} km/h<extra></extra>",
+            showlegend=False,
+        )
+    )
+    title = (
+        f"Diagnostic segment | {issue.get('service_day')} #{issue.get('trip_instance')} | "
+        f"{issue.get('train_type') or ''} {issue.get('train_line_ride_id')}"
+    )
+    return style_delay_geo(fig, title, height=520)
 
 
 def build_movement_segments(
     df: pl.DataFrame, window_start: datetime, window_end: datetime
 ) -> tuple[list[dict[str, object]], dict[str, int], pl.DataFrame]:
     base = (
-        df.filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
+        add_trip_instance(df)
+        .filter(pl.col("lat").is_not_null() & pl.col("lon").is_not_null())
+        .filter(in_germany_bbox_expr())
         .filter(pl.col("train_line_ride_id").is_not_null())
         .with_columns(pl.col("time").alias("event_time"))
         .filter(pl.col("event_time").is_not_null())
         .filter((pl.col("event_time") >= window_start) & (pl.col("event_time") < window_end))
-        .sort(["train_line_ride_id", "event_time", "train_line_station_num"])
-        .with_columns(
-            pl.col("train_line_station_num").shift(1).over("train_line_ride_id").alias("_prev_station_num"),
-            pl.col("event_time").shift(1).over("train_line_ride_id").alias("_prev_event_time"),
-        )
-        .with_columns(
-            pl.when(pl.col("_prev_event_time").is_null())
-            .then(1)
-            .when(pl.col("train_line_station_num") < pl.col("_prev_station_num"))
-            .then(1)
-            .when((pl.col("event_time") - pl.col("_prev_event_time")).dt.total_minutes() > 480)
-            .then(1)
-            .otherwise(0)
-            .cum_sum()
-            .over("train_line_ride_id")
-            .alias("trip_instance")
-        )
-        .sort(["train_line_ride_id", "trip_instance", "train_line_station_num", "event_time"])
+        .sort(["train_line_ride_id", "service_day", "trip_instance", "train_line_station_num", "event_time"])
     )
     stats = {
         "candidate_rows": base.height,
-        "candidate_train_runs": base.select(["train_line_ride_id", "trip_instance"]).unique().height
+        "candidate_train_runs": base.select(["train_line_ride_id", "service_day", "trip_instance"]).unique().height
         if not base.is_empty()
         else 0,
         "rendered_train_runs": 0,
@@ -775,10 +821,11 @@ def build_movement_segments(
         return [], stats, pl.DataFrame()
 
     stops = (
-        base.group_by(["train_line_ride_id", "trip_instance", "train_line_station_num"])
+        base.group_by(["train_line_ride_id", "service_day", "trip_instance", "train_line_station_num"])
         .agg(
             pl.col("event_time").min().alias("first_event_time"),
             pl.col("event_time").max().alias("last_event_time"),
+            pl.col("station_name").sort_by("event_time").drop_nulls().first().alias("station_name"),
             pl.col("delay_in_min").sort_by("event_time").first().alias("first_delay"),
             pl.col("delay_in_min").sort_by("event_time").last().alias("last_delay"),
             pl.col("arrival_change_time").sort_by("event_time").drop_nulls().first().alias("arrival_time"),
@@ -817,24 +864,25 @@ def build_movement_segments(
             .otherwise(pl.lit("regional"))
             .alias("train_category"),
         )
-        .sort(["train_line_ride_id", "trip_instance", "train_line_station_num", "first_event_time"])
+        .sort(["train_line_ride_id", "service_day", "trip_instance", "train_line_station_num", "first_event_time"])
     )
     stats["rendered_points"] = stops.height
-    run_sizes = stops.group_by(["train_line_ride_id", "trip_instance"]).agg(pl.len().alias("points"))
+    run_sizes = stops.group_by(["train_line_ride_id", "service_day", "trip_instance"]).agg(pl.len().alias("points"))
     stats["single_point_runs"] = run_sizes.filter(pl.col("points") < 2).height
 
     pairs = (
         stops.with_columns(
             pl.col("segment_end_time")
             .shift(-1)
-            .over(["train_line_ride_id", "trip_instance"])
+            .over(["train_line_ride_id", "service_day", "trip_instance"])
             .alias("next_arrival_time"),
             pl.col("segment_end_delay")
             .shift(-1)
-            .over(["train_line_ride_id", "trip_instance"])
+            .over(["train_line_ride_id", "service_day", "trip_instance"])
             .alias("next_arrival_delay"),
-            pl.col("lat").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_lat"),
-            pl.col("lon").shift(-1).over(["train_line_ride_id", "trip_instance"]).alias("next_lon"),
+            pl.col("station_name").shift(-1).over(["train_line_ride_id", "service_day", "trip_instance"]).alias("next_station_name"),
+            pl.col("lat").shift(-1).over(["train_line_ride_id", "service_day", "trip_instance"]).alias("next_lat"),
+            pl.col("lon").shift(-1).over(["train_line_ride_id", "service_day", "trip_instance"]).alias("next_lon"),
         )
         .filter(pl.col("next_arrival_time").is_not_null())
         .with_columns((pl.col("next_arrival_time") - pl.col("segment_start_time")).dt.total_minutes().alias("gap_min"))
@@ -864,7 +912,7 @@ def build_movement_segments(
     stats["long_segments"] = pairs.filter(pl.col("gap_min") > 360).height
     stats["implausible_speed_segments"] = pairs.filter(pl.col("is_implausible_speed")).height
     valid = pairs.filter((pl.col("gap_min") >= 2) & (pl.col("gap_min") <= 360) & ~pl.col("is_implausible_speed"))
-    stats["rendered_train_runs"] = valid.select(["train_line_ride_id", "trip_instance"]).unique().height
+    stats["rendered_train_runs"] = valid.select(["train_line_ride_id", "service_day", "trip_instance"]).unique().height
     stats["no_valid_segment_runs"] = max(0, stats["candidate_train_runs"] - stats["rendered_train_runs"] - stats["single_point_runs"])
 
     travel_segments_df = (
@@ -903,12 +951,20 @@ def build_movement_segments(
         .select(
             [
                 "train_line_ride_id",
+                "service_day",
                 "trip_instance",
+                "train_type",
+                "station_name",
+                "next_station_name",
                 "segment_start_time",
                 "next_arrival_time",
                 "gap_min",
                 "distance_km",
                 "speed_kmh",
+                "lat",
+                "lon",
+                "next_lat",
+                "next_lon",
                 "is_implausible_speed",
             ]
         )
@@ -1438,9 +1494,6 @@ def main() -> None:
             scrolling=False,
         )
     elif view == "Diagnostics":
-        with st.spinner("Building active segment audit..."):
-            active_segment_audit = build_active_segment_audit(movement_segments, window_start, window_end)
-            hourly_coverage = build_hourly_coverage(day_df, window_start, window_end)
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("Rendered train runs", f"{movement_stats['rendered_train_runs']:,}")
         d2.metric("Rendered points", f"{movement_stats['rendered_points']:,}")
@@ -1459,14 +1512,48 @@ def main() -> None:
             ]
         ]
         st.dataframe(pl.DataFrame(issue_rows), use_container_width=True, hide_index=True)
-        st.subheader("Hourly loaded data coverage")
-        st.dataframe(hourly_coverage, use_container_width=True, hide_index=True)
-        st.subheader("15-minute active segment audit")
-        st.dataframe(active_segment_audit, use_container_width=True, hide_index=True)
         if movement_issues.is_empty():
             st.success("No segment-level timing issues found in the rendered movement data.")
         else:
-            st.dataframe(movement_issues.head(500), use_container_width=True, hide_index=True)
+            issues = (
+                movement_issues.with_columns(
+                    pl.when(pl.col("is_implausible_speed"))
+                    .then(pl.lit("Implausible speed"))
+                    .when(pl.col("gap_min") < 2)
+                    .then(pl.lit("Too short"))
+                    .when(pl.col("gap_min") > 360)
+                    .then(pl.lit("Too long"))
+                    .otherwise(pl.lit("Other"))
+                    .alias("issue_type")
+                )
+                .sort(["issue_type", "speed_kmh"], descending=[False, True])
+                .with_row_index("issue_rank")
+            )
+            issue_types = ["All", *issues.select("issue_type").unique().sort("issue_type")["issue_type"].to_list()]
+            selected_issue_type = st.selectbox("Issue type", issue_types)
+            filtered_issues = issues
+            if selected_issue_type != "All":
+                filtered_issues = issues.filter(pl.col("issue_type") == selected_issue_type)
+            selected_issue_number = st.number_input(
+                "Diagnostic issue rank",
+                min_value=1,
+                max_value=max(1, filtered_issues.height),
+                value=1,
+                step=1,
+                key=f"diagnostic-issue-rank-{selected_issue_type}",
+            )
+            selected_issue = filtered_issues.row(int(selected_issue_number) - 1, named=True)
+            st.caption(
+                f"{selected_issue['issue_type']} | {selected_issue['service_day']} #{selected_issue['trip_instance']} | "
+                f"{selected_issue['station_name']} -> {selected_issue['next_station_name']} | "
+                f"gap {selected_issue['gap_min']:.1f} min, distance {selected_issue['distance_km']:.1f} km, "
+                f"speed {selected_issue['speed_kmh']:.1f} km/h"
+            )
+            st.plotly_chart(
+                make_issue_segment_map(selected_issue),
+                use_container_width=True,
+                key=f"diagnostic-issue-map-{selected_issue['issue_rank']}-{selected_issue['train_line_ride_id']}",
+            )
     elif view == "Propagation charts":
         top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
         with st.spinner("Building chart summary..."):
@@ -1487,37 +1574,28 @@ def main() -> None:
             format_func=lambda value: value.strftime("%Y-%m-%d"),
             key=f"train-run-day-{selected_day:%Y-%m-%d}",
         )
-        day_summary = summary.filter(pl.col("service_day") == selected_run_day)
-        option_rows = []
-        option_labels = {}
-        for r in day_summary.to_dicts():
-            run_key = f"{r['service_day']:%Y-%m-%d}::{r['trip_instance']}::{r['train_line_ride_id']}"
-            option_rows.append(
-                {
-                    "key": run_key,
-                    "train_line_ride_id": r["train_line_ride_id"],
-                    "service_day": r["service_day"],
-                    "trip_instance": int(r["trip_instance"]),
-                }
-            )
-            option_labels[run_key] = (
-                f"{r['service_day']:%Y-%m-%d} #{r['trip_instance']} | "
-                f"{r['train_type'] or ''} {r['train_number'] or ''} -> {r['destination'] or ''} | "
-                f"max {r['max_delay']} min | {r['train_line_ride_id']}"
-            )
-        options = {row["key"]: row for row in option_rows}
-        selected_key = st.selectbox(
-            "Inspect one train run",
-            [row["key"] for row in option_rows],
-            format_func=lambda value: option_labels[value],
-            key=f"train-run-choice-v2-{selected_run_day:%Y-%m-%d}",
+        day_summary = summary.filter(pl.col("service_day") == selected_run_day).with_row_index("run_rank")
+        selected_rank_number = st.number_input(
+            "Inspect one train run rank",
+            min_value=1,
+            max_value=max(1, day_summary.height),
+            value=1,
+            step=1,
+            key=f"train-run-rank-number-v1-{selected_run_day:%Y-%m-%d}",
         )
-        selected_run = options[selected_key]
+        selected_rank = int(selected_rank_number) - 1
+        selected_run = day_summary.filter(pl.col("run_rank") == selected_rank).to_dicts()[0]
+        selected_label = (
+            f"{selected_rank + 1}. {selected_run['service_day']:%Y-%m-%d} #{selected_run['trip_instance']} | "
+            f"{selected_run['train_type'] or ''} {selected_run['train_number'] or ''} -> "
+            f"{selected_run['destination'] or ''} | max {selected_run['max_delay']} min | "
+            f"{selected_run['train_line_ride_id']}"
+        )
+        st.caption(f"Selected: {selected_label}")
         selected_ride_id = selected_run["train_line_ride_id"]
         selected_service_day = selected_run["service_day"]
-        selected_trip_instance = selected_run["trip_instance"]
-        st.caption(f"Selected: {option_labels[selected_key]}")
-        chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_trip_instance}-{selected_ride_id}"
+        selected_trip_instance = int(selected_run["trip_instance"])
+        chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_rank}-{selected_trip_instance}-{selected_ride_id}"
         st.plotly_chart(
             make_trip_map(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
             use_container_width=True,
