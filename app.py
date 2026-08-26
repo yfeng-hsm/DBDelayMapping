@@ -748,7 +748,6 @@ def make_train_flow_animation(
     window_start: datetime,
     window_end: datetime,
     outline: list[list[list[float]]],
-    show_under_30: bool,
 ) -> str:
     if not segments:
         return "<div style='color:#eee;padding:24px'>No mappable train movement data for this filter.</div>"
@@ -764,13 +763,16 @@ def make_train_flow_animation(
         "startEpochMs": int(start_time.timestamp() * 1000),
         "startParts": [start_time.year, start_time.month, start_time.day, start_time.hour, start_time.minute],
         "segmentCount": len(segments),
-        "showUnder30": show_under_30,
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
     return f"""
 <div id="train-flow-root" style="height:780px;background:#050505;color:#f3edf0;position:relative;overflow:hidden;border:1px solid #241820">
   <canvas id="train-flow-canvas" style="width:100%;height:100%;display:block"></canvas>
   <div style="position:absolute;left:24px;top:18px;font:600 15px system-ui, sans-serif;letter-spacing:.02em">Moving train delay flow</div>
+  <label style="position:absolute;left:24px;top:46px;display:flex;align-items:center;gap:8px;font:13px system-ui, sans-serif;color:#d8cbd1;background:rgba(5,5,5,.60);padding:6px 8px;border:1px solid #2b1b23">
+    <input id="train-flow-under-30" type="checkbox" checked style="accent-color:#ff5f55">
+    <span>show &lt;30 min</span>
+  </label>
   <div id="train-flow-clock" style="position:absolute;right:28px;top:20px;font:700 28px ui-monospace, SFMono-Regular, Menlo, monospace;color:#fff"></div>
   <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#bdaeb5"></div>
   <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#d8cbd1;background:rgba(5,5,5,.70);padding:12px 14px;border:1px solid #3b2630;min-width:132px">
@@ -791,6 +793,7 @@ def make_train_flow_animation(
   const ctx = canvas.getContext("2d");
   const clock = document.getElementById("train-flow-clock");
   const count = document.getElementById("train-flow-count");
+  const under30Toggle = document.getElementById("train-flow-under-30");
   const cities = [
     ["Hamburg", 10.00, 53.55], ["Berlin", 13.40, 52.52], ["Hannover", 9.73, 52.37],
     ["Köln", 6.96, 50.94], ["Frankfurt", 8.68, 50.11], ["Leipzig", 12.37, 51.34],
@@ -803,6 +806,7 @@ def make_train_flow_animation(
   let simT = payload.minT;
   let last = performance.now();
   let lastDraw = 0;
+  let showUnder30 = under30Toggle.checked;
   const speed = 36;
   const bucketSize = 5;
   const trailMinutes = 12;
@@ -1062,7 +1066,7 @@ def make_train_flow_animation(
         head: {{x: hx, y: hy, delay: headGeo.delay}},
       }};
     }});
-    const visible = active.filter(item => payload.showUnder30 || item.cls >= 30);
+    const visible = active.filter(item => showUnder30 || item.cls >= 30);
 
     for (const cls of [45, 75, 90]) {{
       for (const item of visible) {{
@@ -1082,6 +1086,9 @@ def make_train_flow_animation(
 
   resize();
   window.addEventListener("resize", resize);
+  under30Toggle.addEventListener("change", () => {{
+    showUnder30 = under30Toggle.checked;
+  }});
   requestAnimationFrame(draw);
 }})();
 </script>
@@ -1101,7 +1108,6 @@ def main() -> None:
             default=[],
             help="Leave empty to include every train type after the Bus exclusion setting.",
         )
-        show_under_30 = st.checkbox("Show points under 30 min", value=True)
         top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
 
     window_start = datetime.combine(selected_day, time.min)
@@ -1145,7 +1151,7 @@ def main() -> None:
 
     if view == "Moving trains":
         components.html(
-            make_train_flow_animation(movement_segments, window_start, window_end, outline, show_under_30),
+            make_train_flow_animation(movement_segments, window_start, window_end, outline),
             height=800,
             scrolling=False,
         )
