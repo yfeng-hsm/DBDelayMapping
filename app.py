@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tarfile
 from datetime import date, datetime, time, timedelta
@@ -27,6 +28,8 @@ GERMANY_GEOJSON_URL = (
 )
 GERMANY_GEOJSON = CACHE_DIR / "germany-states.geo.json"
 FERN_TYPES = ("ICE", "IC", "EC", "ECE", "TGV", "RJ", "RJX", "NJ", "EN", "FLX")
+MAX_SEGMENT_SPEED_KMH = 380
+MIN_SPEED_CHECK_DISTANCE_KM = 15
 
 
 REQUIRED_COLUMNS = [
@@ -609,6 +612,7 @@ def build_movement_segments(
         "non_monotonic_points": 0,
         "short_segments": 0,
         "long_segments": 0,
+        "implausible_speed_segments": 0,
         "single_point_runs": 0,
         "no_valid_segment_runs": 0,
     }
@@ -679,10 +683,32 @@ def build_movement_segments(
         )
         .filter(pl.col("next_arrival_time").is_not_null())
         .with_columns((pl.col("next_arrival_time") - pl.col("segment_start_time")).dt.total_minutes().alias("gap_min"))
+        .with_columns(
+            (
+                (
+                    (
+                        (pl.col("next_lon") - pl.col("lon"))
+                        * 111.32
+                        * (((pl.col("lat") + pl.col("next_lat")) / 2) * math.pi / 180).cos()
+                    )
+                    ** 2
+                    + ((pl.col("next_lat") - pl.col("lat")) * 110.57) ** 2
+                )
+                ** 0.5
+            ).alias("distance_km")
+        )
+        .with_columns((pl.col("distance_km") / (pl.col("gap_min") / 60)).alias("speed_kmh"))
+        .with_columns(
+            (
+                (pl.col("distance_km") >= MIN_SPEED_CHECK_DISTANCE_KM)
+                & (pl.col("speed_kmh") > MAX_SEGMENT_SPEED_KMH)
+            ).alias("is_implausible_speed")
+        )
     )
     stats["short_segments"] = pairs.filter(pl.col("gap_min") < 2).height
     stats["long_segments"] = pairs.filter(pl.col("gap_min") > 360).height
-    valid = pairs.filter((pl.col("gap_min") >= 2) & (pl.col("gap_min") <= 360))
+    stats["implausible_speed_segments"] = pairs.filter(pl.col("is_implausible_speed")).height
+    valid = pairs.filter((pl.col("gap_min") >= 2) & (pl.col("gap_min") <= 360) & ~pl.col("is_implausible_speed"))
     stats["rendered_train_runs"] = valid.select(["train_line_ride_id", "trip_instance"]).unique().height
     stats["no_valid_segment_runs"] = max(0, stats["candidate_train_runs"] - stats["rendered_train_runs"] - stats["single_point_runs"])
 
@@ -718,8 +744,20 @@ def build_movement_segments(
     )
     segments_df = pl.concat([travel_segments_df, dwell_segments_df]).sort("t0")
     issue_df = (
-        pairs.filter((pl.col("gap_min") < 2) | (pl.col("gap_min") > 360))
-        .select(["train_line_ride_id", "trip_instance", "segment_start_time", "next_arrival_time", "gap_min"])
+        pairs.filter((pl.col("gap_min") < 2) | (pl.col("gap_min") > 360) | pl.col("is_implausible_speed"))
+        .select(
+            [
+                "train_line_ride_id",
+                "trip_instance",
+                "segment_start_time",
+                "next_arrival_time",
+                "gap_min",
+                "distance_km",
+                "speed_kmh",
+                "is_implausible_speed",
+            ]
+        )
+        .sort("speed_kmh", descending=True)
         .head(500)
     )
     return segments_df.to_dicts(), stats, issue_df
@@ -1231,7 +1269,14 @@ def main() -> None:
 
         issue_rows = [
             {"issue": key, "count": movement_stats[key]}
-            for key in ["non_monotonic_points", "short_segments", "long_segments", "single_point_runs", "no_valid_segment_runs"]
+            for key in [
+                "non_monotonic_points",
+                "short_segments",
+                "long_segments",
+                "implausible_speed_segments",
+                "single_point_runs",
+                "no_valid_segment_runs",
+            ]
         ]
         st.dataframe(pl.DataFrame(issue_rows), use_container_width=True, hide_index=True)
         st.subheader("Hourly loaded data coverage")
