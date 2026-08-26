@@ -1448,6 +1448,7 @@ def main() -> None:
             "Run day",
             run_days,
             format_func=lambda value: value.strftime("%Y-%m-%d"),
+            key=f"train-run-day-{selected_day:%Y-%m-%d}",
         )
         day_summary = summary.filter(pl.col("service_day") == selected_run_day)
         options = {
@@ -1457,10 +1458,23 @@ def main() -> None:
             )
             for r in day_summary.to_dicts()
         }
-        selected_label = st.selectbox("Inspect one train run", list(options.keys()))
+        selected_label = st.selectbox(
+            "Inspect one train run",
+            list(options.keys()),
+            key=f"train-run-choice-{selected_run_day:%Y-%m-%d}",
+        )
         selected_ride_id, selected_service_day = options[selected_label]
-        st.plotly_chart(make_trip_map(day_df, selected_ride_id, selected_service_day), use_container_width=True)
-        st.plotly_chart(make_trip_line(day_df, selected_ride_id, selected_service_day), use_container_width=True)
+        chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_ride_id}"
+        st.plotly_chart(
+            make_trip_map(day_df, selected_ride_id, selected_service_day),
+            use_container_width=True,
+            key=f"train-run-map-{chart_key}",
+        )
+        st.plotly_chart(
+            make_trip_line(day_df, selected_ride_id, selected_service_day),
+            use_container_width=True,
+            key=f"train-run-line-{chart_key}",
+        )
     elif view == "Data":
         rows_shown = st.slider("Rows shown", 20, 500, 100, 20)
         with st.spinner("Building data summary..."):
