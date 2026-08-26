@@ -683,7 +683,7 @@ def build_movement_segments(
     stats["rendered_train_runs"] = valid.select(["train_line_ride_id", "trip_instance"]).unique().height
     stats["no_valid_segment_runs"] = max(0, stats["candidate_train_runs"] - stats["rendered_train_runs"] - stats["single_point_runs"])
 
-    segments_df = (
+    travel_segments_df = (
         valid.with_columns(
             ((pl.col("segment_start_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t0"),
             ((pl.col("next_arrival_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t1"),
@@ -696,6 +696,22 @@ def build_movement_segments(
         )
         .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1"])
     )
+    dwell_segments_df = (
+        stops.with_columns((pl.col("segment_start_time") - pl.col("segment_end_time")).dt.total_minutes().alias("dwell_min"))
+        .filter((pl.col("dwell_min") >= 1) & (pl.col("dwell_min") <= 120))
+        .with_columns(
+            ((pl.col("segment_end_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t0"),
+            ((pl.col("segment_start_time") - pl.lit(window_start)).dt.total_seconds() / 60).round(1).alias("t1"),
+            pl.col("lon").round(4).alias("lon0"),
+            pl.col("lat").round(4).alias("lat0"),
+            pl.col("lon").round(4).alias("lon1"),
+            pl.col("lat").round(4).alias("lat1"),
+            pl.col("segment_end_delay").fill_null(0).round(0).cast(pl.Int32).alias("d0"),
+            pl.col("segment_start_delay").fill_null(0).round(0).cast(pl.Int32).alias("d1"),
+        )
+        .select(["t0", "t1", "lon0", "lat0", "lon1", "lat1", "d0", "d1"])
+    )
+    segments_df = pl.concat([travel_segments_df, dwell_segments_df]).sort("t0")
     issue_df = (
         pairs.filter((pl.col("gap_min") < 2) | (pl.col("gap_min") > 360))
         .select(["train_line_ride_id", "trip_instance", "segment_start_time", "next_arrival_time", "gap_min"])
