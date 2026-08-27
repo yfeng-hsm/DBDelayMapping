@@ -28,11 +28,15 @@ Open:
 http://localhost:8501
 ```
 
-The first run downloads the selected monthly Parquet file into:
+The first run downloads the selected monthly Parquet file into a writable cache directory. In local
+Docker this is:
 
 ```text
 ./data/cache/
 ```
+
+On hosted environments where the repository directory is read-only, the app falls back to a temporary
+cache such as `/tmp/db-delay-mapping/cache`.
 
 Monthly files are large. The smallest early files are around 100 MB; newer monthly files are around 600 MB.
 

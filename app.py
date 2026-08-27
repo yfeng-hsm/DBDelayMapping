@@ -4,6 +4,7 @@ import json
 import math
 import os
 import tarfile
+import tempfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -19,8 +20,31 @@ BASE_URL = os.getenv(
     "HF_DATASET_BASE_URL",
     "https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main/monthly_processed_data",
 )
-CACHE_DIR = Path(os.getenv("DATA_CACHE_DIR", "/app/data/cache"))
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def resolve_cache_dir() -> Path:
+    env_value = os.getenv("DATA_CACHE_DIR")
+    candidates = [Path(env_value)] if env_value else []
+    candidates.extend(
+        [
+            Path("data/cache"),
+            Path(tempfile.gettempdir()) / "db-delay-mapping" / "cache",
+            Path.home() / ".cache" / "db-delay-mapping",
+        ]
+    )
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            continue
+
+    raise PermissionError("No writable cache directory found")
+
+
+CACHE_DIR = resolve_cache_dir()
 DERIVED_CACHE_DIR = CACHE_DIR / "derived"
 DERIVED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PRELOADED_MONTHS = ("2026-05", "2026-06", "2026-07")
