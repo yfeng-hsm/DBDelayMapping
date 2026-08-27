@@ -674,16 +674,16 @@ def make_data_completeness_heatmap(data: dict[str, object]) -> go.Figure:
             zmin=0,
             zmax=100,
             colorscale=[
-                [0.0, "#6d1f1f"],
-                [0.049, "#6d1f1f"],
-                [0.05, "#c34a43"],
-                [0.149, "#c34a43"],
-                [0.15, "#d59b3a"],
-                [0.199, "#d59b3a"],
-                [0.2, "#071016"],
-                [0.46, "#1f667f"],
-                [0.72, "#54a8c9"],
-                [1.0, "#d8f3ff"],
+                [0.0, "#8b1e1e"],
+                [0.049, "#8b1e1e"],
+                [0.05, "#d94b45"],
+                [0.149, "#d94b45"],
+                [0.15, "#e6a23c"],
+                [0.199, "#e6a23c"],
+                [0.2, "#eef5fb"],
+                [0.46, "#9cc9df"],
+                [0.72, "#4e98bd"],
+                [1.0, "#125f86"],
             ],
             colorbar=dict(
                 title="Coverage",
@@ -705,10 +705,10 @@ def make_data_completeness_heatmap(data: dict[str, object]) -> go.Figure:
         x1=5.5,
         y0=0.5,
         y1=total_days + 0.5,
-        line=dict(color="#c34a43", width=1.4, dash="dash"),
+        line=dict(color="#d94b45", width=1.4, dash="dash"),
         fillcolor="rgba(0,0,0,0)",
     )
-    fig.add_hline(y=30.5, line_width=1.1, line_color="#eef3f8", opacity=0.65)
+    fig.add_hline(y=30.5, line_width=1.1, line_color="#27313b", opacity=0.55)
     fig.add_annotation(x=23.4, y=30.5, text="July starts", showarrow=False, xanchor="right", yshift=10)
     fig.add_annotation(
         x=1.1,
@@ -716,7 +716,7 @@ def make_data_completeness_heatmap(data: dict[str, object]) -> go.Figure:
         text="Repeated likely collection gaps: 01:00-05:59, mainly in July",
         showarrow=False,
         xanchor="left",
-        font=dict(color="#f99a9f"),
+        font=dict(color="#b72f2f"),
     )
     tickvals = [1, 5, 10, 15, 20, 25, 30, 31, 35, 40, 45, 50, 55, 60, 61]
     ticktext = [
@@ -739,19 +739,35 @@ def make_data_completeness_heatmap(data: dict[str, object]) -> go.Figure:
     fig.update_layout(
         title="June-July 2026 hourly train-run coverage",
         height=760,
-        paper_bgcolor="#020609",
-        plot_bgcolor="#020609",
-        font=dict(color="#eef3f8"),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(color="#1f2933"),
         margin=dict(l=24, r=24, t=64, b=42),
-        xaxis=dict(title="Hour of day", tickmode="array", tickvals=list(range(0, 24, 2))),
-        yaxis=dict(title="Date", tickmode="array", tickvals=tickvals, ticktext=ticktext, autorange="reversed"),
+        xaxis=dict(
+            title="Hour of day",
+            tickmode="array",
+            tickvals=list(range(0, 24, 2)),
+            gridcolor="#e7edf2",
+            linecolor="#cfd8df",
+            zerolinecolor="#e7edf2",
+        ),
+        yaxis=dict(
+            title="Date",
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            autorange="reversed",
+            gridcolor="#eef2f5",
+            linecolor="#cfd8df",
+            zerolinecolor="#eef2f5",
+        ),
     )
     return fig
 
 
 def make_data_completeness_gap_chart(data: dict[str, object]) -> go.Figure:
     fig = go.Figure()
-    for month_data, color in zip(data["months"], ["#69b3d0", "#c34a43"]):
+    for month_data, color in zip(data["months"], ["#4e98bd", "#d94b45"]):
         stats = month_data["hour_stats"]
         fig.add_bar(
             x=[stat["hour"] for stat in stats],
@@ -764,12 +780,19 @@ def make_data_completeness_gap_chart(data: dict[str, object]) -> go.Figure:
         title="Days flagged as likely collection gaps by hour",
         height=300,
         barmode="group",
-        paper_bgcolor="#020609",
-        plot_bgcolor="#020609",
-        font=dict(color="#eef3f8"),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(color="#1f2933"),
         margin=dict(l=24, r=24, t=58, b=42),
-        xaxis=dict(title="Hour of day", tickmode="array", tickvals=list(range(0, 24, 2)), gridcolor="#182630"),
-        yaxis=dict(title="Days with raw rows < 100", gridcolor="#182630"),
+        xaxis=dict(
+            title="Hour of day",
+            tickmode="array",
+            tickvals=list(range(0, 24, 2)),
+            gridcolor="#e7edf2",
+            linecolor="#cfd8df",
+            zerolinecolor="#e7edf2",
+        ),
+        yaxis=dict(title="Days with raw rows < 100", gridcolor="#e7edf2", linecolor="#cfd8df"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
