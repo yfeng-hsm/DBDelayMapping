@@ -463,6 +463,35 @@ def build_trip_summary(day_df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def format_run_option(rank: int, run: dict[str, object]) -> str:
+    service_day = run.get("service_day")
+    day_text = service_day.strftime("%Y-%m-%d") if hasattr(service_day, "strftime") else str(service_day)
+    train_type = str(run.get("train_type") or "").strip()
+    train_number = str(run.get("train_number") or "").strip()
+    destination = str(run.get("destination") or "").strip()
+    max_delay = run.get("max_delay")
+    station_count = run.get("station_count")
+    trip_instance = run.get("trip_instance")
+    train_label = " ".join(part for part in [train_type, train_number] if part).strip() or "Train"
+    return (
+        f"{rank + 1}. {day_text} #{trip_instance} | {train_label} -> {destination} | "
+        f"max {max_delay} min | {station_count} stops"
+    )
+
+
+def run_selectbox(label: str, summary: pl.DataFrame, key: str) -> dict[str, object]:
+    ranked = summary.with_row_index("run_rank")
+    options = ranked.to_dicts()
+    labels = {int(run["run_rank"]): format_run_option(int(run["run_rank"]), run) for run in options}
+    selected_rank = st.selectbox(
+        label,
+        list(labels.keys()),
+        format_func=lambda value: labels[value],
+        key=key,
+    )
+    return next(run for run in options if int(run["run_rank"]) == selected_rank)
+
+
 def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
     df = add_trip_instance(df)
     selected_runs = top_trips.select(["train_line_ride_id", "service_day", "trip_instance", "first_order"])
@@ -1494,13 +1523,19 @@ def make_train_flow_animation(
 
 
 def main() -> None:
-    st.set_page_config(page_title="German trains", layout="wide")
-    st.title("German trains")
+    st.set_page_config(page_title="German Trains' Delay Map", layout="wide")
+    st.title("German Trains' Delay Map")
+    st.markdown(
+        "[GitHub](https://github.com/yfeng-hsm/DBDelayMapping) | "
+        "Data: public timetable-derived data from "
+        "[piebro/deutsche-bahn-data](https://huggingface.co/datasets/piebro/deutsche-bahn-data). "
+        "Disclaimer: research visualization only; not affiliated with Deutsche Bahn and not for operational decisions."
+    )
 
     with st.sidebar:
         selected_day = st.date_input(
             "Day",
-            value=date(2026, 6, 10),
+            value=date(2026, 7, 10),
             min_value=PRELOADED_START_DAY,
             max_value=PRELOADED_END_DAY,
         )
@@ -1508,13 +1543,13 @@ def main() -> None:
 
     view = st.radio(
         "View",
-        ["Moving trains", "Diagnostics", "Propagation charts", "Train run", "Data"],
+        ["Moving trains", "Propagation", "Train run", "Data", "Diagnostics"],
         index=0,
         horizontal=True,
     )
     needs_movement = view in {"Moving trains", "Diagnostics"}
 
-    window_start = datetime.combine(selected_day, time.min)
+    window_start = datetime.combine(selected_day, time(6, 0))
     window_end = window_start + timedelta(hours=36)
     needed_months = [(window_start.year, window_start.month)]
     if next_month_start(window_start) < window_end:
@@ -1638,13 +1673,36 @@ def main() -> None:
                 use_container_width=True,
                 key=f"diagnostic-issue-map-{selected_issue['issue_rank']}-{selected_issue['train_line_ride_id']}",
             )
-    elif view == "Propagation charts":
-        top_n = st.slider("Top delayed train runs", 5, 80, 30, 5)
+    elif view == "Propagation":
         with st.spinner("Building chart summary..."):
             summary = build_trip_summary(day_df)
-            top_trips = summary.head(top_n).with_row_index("first_order")
+        if summary.is_empty():
+            st.warning("No train runs with at least three observed stops.")
+            return
+        selected_run = run_selectbox(
+            "Most delayed train run",
+            summary,
+            key=f"propagation-run-select-{selected_day:%Y-%m-%d}",
+        )
+        selected_ride_id = selected_run["train_line_ride_id"]
+        selected_service_day = selected_run["service_day"]
+        selected_trip_instance = int(selected_run["trip_instance"])
+        selected_trip = (
+            summary.filter(
+                (pl.col("train_line_ride_id") == selected_ride_id)
+                & (pl.col("service_day") == selected_service_day)
+                & (pl.col("trip_instance") == selected_trip_instance)
+            )
+            .with_row_index("first_order")
+        )
+        st.caption(f"Selected: {format_run_option(int(selected_run['run_rank']), selected_run)}")
         st.plotly_chart(make_hourly_chart(day_df), use_container_width=True)
-        st.plotly_chart(make_heatmap(day_df, top_trips), use_container_width=True)
+        st.plotly_chart(make_heatmap(day_df, selected_trip), use_container_width=True)
+        st.plotly_chart(
+            make_trip_line(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
+            use_container_width=True,
+            key=f"propagation-line-{selected_service_day:%Y-%m-%d}-{selected_trip_instance}-{selected_ride_id}",
+        )
     elif view == "Train run":
         with st.spinner("Building train run summary..."):
             summary = build_trip_summary(day_df)
@@ -1658,28 +1716,18 @@ def main() -> None:
             format_func=lambda value: value.strftime("%Y-%m-%d"),
             key=f"train-run-day-{selected_day:%Y-%m-%d}",
         )
-        day_summary = summary.filter(pl.col("service_day") == selected_run_day).with_row_index("run_rank")
-        selected_rank_number = st.number_input(
-            "Inspect one train run rank",
-            min_value=1,
-            max_value=max(1, day_summary.height),
-            value=1,
-            step=1,
-            key=f"train-run-rank-number-v1-{selected_run_day:%Y-%m-%d}",
+        day_summary = summary.filter(pl.col("service_day") == selected_run_day)
+        selected_run = run_selectbox(
+            "Inspect one train run",
+            day_summary,
+            key=f"train-run-select-v1-{selected_run_day:%Y-%m-%d}",
         )
-        selected_rank = int(selected_rank_number) - 1
-        selected_run = day_summary.filter(pl.col("run_rank") == selected_rank).to_dicts()[0]
-        selected_label = (
-            f"{selected_rank + 1}. {selected_run['service_day']:%Y-%m-%d} #{selected_run['trip_instance']} | "
-            f"{selected_run['train_type'] or ''} {selected_run['train_number'] or ''} -> "
-            f"{selected_run['destination'] or ''} | max {selected_run['max_delay']} min | "
-            f"{selected_run['train_line_ride_id']}"
-        )
+        selected_label = format_run_option(int(selected_run["run_rank"]), selected_run)
         st.caption(f"Selected: {selected_label}")
         selected_ride_id = selected_run["train_line_ride_id"]
         selected_service_day = selected_run["service_day"]
         selected_trip_instance = int(selected_run["trip_instance"])
-        chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_rank}-{selected_trip_instance}-{selected_ride_id}"
+        chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_run['run_rank']}-{selected_trip_instance}-{selected_ride_id}"
         st.plotly_chart(
             make_trip_map(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
             use_container_width=True,
