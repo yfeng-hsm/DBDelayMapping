@@ -86,6 +86,7 @@ timetable update row in memory.
   - each train is animated between observed stations.
   - red trails show delayed movement.
   - brighter/larger points indicate higher delay.
+  - playback speed can be changed inside the map with `0.5x`, `0.8x`, `1.0x`, `1.2x`, and `1.5x`.
   - Germany is drawn with a Mercator projection and fixed aspect ratio.
   - playback uses a continuous 36-hour window from the selected day, so the animation moves directly into the next day instead of cutting at midnight.
 - Hourly p90 delay by train type.

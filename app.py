@@ -1195,6 +1195,14 @@ def make_train_flow_animation(
     <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-regional" type="checkbox" checked style="accent-color:#ff5f55"><span>Regionalverkehr</span></label>
     <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-under-30" type="checkbox" style="accent-color:#ff5f55"><span>&lt;30 min</span></label>
   </div>
+  <div id="train-flow-speed" style="position:absolute;left:24px;bottom:20px;display:flex;align-items:center;gap:6px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#cbd7df;background:rgba(2,6,9,.76);padding:8px 10px;border:1px solid #2e404b">
+    <span style="margin-right:4px;color:#eef3f8">speed</span>
+    <button type="button" data-speed="0.5" style="font:inherit;color:#cbd7df;background:transparent;border:1px solid #344852;padding:4px 7px;cursor:pointer">0.5x</button>
+    <button type="button" data-speed="0.8" style="font:inherit;color:#cbd7df;background:transparent;border:1px solid #344852;padding:4px 7px;cursor:pointer">0.8x</button>
+    <button type="button" data-speed="1" data-active="true" style="font:inherit;color:#fff;background:#24343e;border:1px solid #7d9aaa;padding:4px 7px;cursor:pointer">1.0x</button>
+    <button type="button" data-speed="1.2" style="font:inherit;color:#cbd7df;background:transparent;border:1px solid #344852;padding:4px 7px;cursor:pointer">1.2x</button>
+    <button type="button" data-speed="1.5" style="font:inherit;color:#cbd7df;background:transparent;border:1px solid #344852;padding:4px 7px;cursor:pointer">1.5x</button>
+  </div>
   <div id="train-flow-clock" style="position:absolute;right:28px;top:20px;font:700 28px ui-monospace, SFMono-Regular, Menlo, monospace;color:#fff"></div>
   <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#aebdc6"></div>
   <div style="position:absolute;right:24px;bottom:20px;font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#cbd7df;background:rgba(2,6,9,.76);padding:12px 14px;border:1px solid #2e404b;min-width:132px">
@@ -1235,7 +1243,8 @@ def make_train_flow_animation(
   let showFern = fernToggle.checked;
   let showRegional = regionalToggle.checked;
   let showUnder30 = under30Toggle.checked;
-  const speed = 36;
+  let speedScale = 1;
+  const baseSpeed = 36;
   const bucketSize = 5;
   const trailMinutes = 12;
   const frameInterval = 1000 / 24;
@@ -1430,7 +1439,7 @@ def make_train_flow_animation(
     lastDraw = now;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    simT += dt * speed;
+    simT += dt * baseSpeed * speedScale;
     if (simT > payload.maxT) {{
       simT = payload.minT;
     }}
@@ -1503,7 +1512,7 @@ def make_train_flow_animation(
     }}
 
     clock.textContent = formatSimTime(simT);
-    count.textContent = `${{active.length}} active · ${{visible.length}} drawn · ${{payload.segmentCount}} segments`;
+    count.textContent = `${{active.length}} active · ${{visible.length}} drawn · ${{payload.segmentCount}} segments · ${{speedScale}}x`;
     requestAnimationFrame(draw);
   }}
 
@@ -1517,6 +1526,18 @@ def make_train_flow_animation(
   }});
   under30Toggle.addEventListener("change", () => {{
     showUnder30 = under30Toggle.checked;
+  }});
+  document.querySelectorAll("#train-flow-speed button").forEach(button => {{
+    button.addEventListener("click", () => {{
+      speedScale = Number(button.dataset.speed || 1);
+      document.querySelectorAll("#train-flow-speed button").forEach(item => {{
+        const active = item === button;
+        item.dataset.active = active ? "true" : "false";
+        item.style.background = active ? "#24343e" : "transparent";
+        item.style.borderColor = active ? "#7d9aaa" : "#344852";
+        item.style.color = active ? "#fff" : "#cbd7df";
+      }});
+    }});
   }});
   requestAnimationFrame(draw);
 }})();
@@ -1615,7 +1636,7 @@ def main() -> None:
                 "no_valid_segment_runs",
             ]
         ]
-        st.dataframe(pl.DataFrame(issue_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pl.DataFrame(issue_rows), width="stretch", hide_index=True)
         if movement_issues.is_empty():
             st.success("No segment-level timing issues found in the rendered movement data.")
         else:
@@ -1666,7 +1687,7 @@ def main() -> None:
             )
             st.plotly_chart(
                 make_issue_segment_map(selected_issue),
-                use_container_width=True,
+                width="stretch",
                 key=f"diagnostic-issue-map-{selected_issue['issue_rank']}-{selected_issue['train_line_ride_id']}",
             )
     elif view == "Propagation":
@@ -1677,8 +1698,8 @@ def main() -> None:
             return
         top_trips = summary.head(5).with_row_index("first_order")
         st.caption("Top 5 train runs by maximum delay in the selected 36-hour window.")
-        st.plotly_chart(make_hourly_chart(day_df), use_container_width=True)
-        st.plotly_chart(make_heatmap(day_df, top_trips), use_container_width=True)
+        st.plotly_chart(make_hourly_chart(day_df), width="stretch")
+        st.plotly_chart(make_heatmap(day_df, top_trips), width="stretch")
     elif view == "Train run":
         with st.spinner("Building train run summary..."):
             summary = build_trip_summary(day_df)
@@ -1706,12 +1727,12 @@ def main() -> None:
         chart_key = f"{selected_service_day:%Y-%m-%d}-{selected_run['run_rank']}-{selected_trip_instance}-{selected_ride_id}"
         st.plotly_chart(
             make_trip_map(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
-            use_container_width=True,
+            width="stretch",
             key=f"train-run-map-{chart_key}",
         )
         st.plotly_chart(
             make_trip_line(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
-            use_container_width=True,
+            width="stretch",
             key=f"train-run-line-{chart_key}",
         )
 
