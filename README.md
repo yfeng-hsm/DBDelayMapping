@@ -44,9 +44,24 @@ environment variable automatically; the Dockerfile uses it in production and fal
 `inotify` limits on Render. Render checks `/_stcore/health` before routing traffic to a deployed
 instance.
 
-Render Free uses an ephemeral filesystem, so downloaded Hugging Face files and derived caches can
-be lost after restarts or idle spin-downs. The app will rebuild those caches on the next visit, which
-can make the first load slow.
+The Docker image preloads these monthly Parquet files during build:
+
+```text
+2026-05
+2026-06
+2026-07
+```
+
+The online date picker is limited to `2026-05-01` through `2026-07-30`. The app uses a 48-hour
+playback window, so `2026-07-31` would require the August Parquet file.
+
+Render Free uses an ephemeral filesystem and only a small memory allowance. Preloading avoids the
+large runtime download, but the full moving-train map can still be memory-heavy. Start with the
+`Data` view, then switch to `Moving trains` or `Diagnostics` after the page has loaded.
+
+To reduce memory use on small hosts, the app loads each 48-hour window as stop-level events: one row
+per `train_line_ride_id`, `service_day`, and `train_line_station_num`. It does not keep every raw
+timetable update row in memory.
 
 ### Option A: Render Dashboard
 

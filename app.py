@@ -23,6 +23,9 @@ CACHE_DIR = Path("/app/data/cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 DERIVED_CACHE_DIR = CACHE_DIR / "derived"
 DERIVED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+PRELOADED_MONTHS = ("2026-05", "2026-06", "2026-07")
+PRELOADED_START_DAY = date(2026, 5, 1)
+PRELOADED_END_DAY = date(2026, 7, 30)
 STATION_TGZ_URL = "https://registry.npmjs.org/db-hafas-stations/-/db-hafas-stations-2.0.0.tgz"
 STATION_NDJSON = CACHE_DIR / "db-hafas-stations-full.ndjson"
 GERMANY_GEOJSON_URL = (
@@ -32,8 +35,8 @@ GERMANY_GEOJSON = CACHE_DIR / "germany-states.geo.json"
 FERN_TYPES = ("ICE", "IC", "EC", "ECE", "TGV", "RJ", "RJX", "NJ", "EN", "FLX")
 MAX_SEGMENT_SPEED_KMH = 380
 MIN_SPEED_CHECK_DISTANCE_KM = 15
-PREPARED_WINDOW_CACHE_VERSION = "prepared-v1"
-MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v8"
+PREPARED_WINDOW_CACHE_VERSION = "prepared-v2"
+MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v9"
 GERMANY_LON_MIN = 5.2
 GERMANY_LON_MAX = 15.6
 GERMANY_LAT_MIN = 47.0
@@ -77,7 +80,6 @@ REQUIRED_COLUMNS = [
     "arrival_change_time",
     "departure_planned_time",
     "departure_change_time",
-    "id",
 ]
 
 
@@ -178,7 +180,7 @@ def load_day(path: str, selected_day: date, train_types: list[str], max_rows: in
     if train_types:
         scan = scan.filter(pl.col("train_type").is_in(train_types))
 
-    return scan.limit(max_rows).collect()
+    return scan.limit(max_rows).collect(engine="streaming")
 
 
 def month_start(dt: datetime) -> datetime:
@@ -191,28 +193,51 @@ def next_month_start(dt: datetime) -> datetime:
     return datetime(dt.year, dt.month + 1, 1)
 
 
-@st.cache_data(show_spinner=False)
 def load_time_window(
     paths: tuple[str, ...], start: datetime, end: datetime
 ) -> pl.DataFrame:
-    event_time_expr = pl.col("time").alias("event_time")
     scans = []
     for path in paths:
         scan = (
             pl.scan_parquet(path)
             .select(REQUIRED_COLUMNS)
-            .with_columns(event_time_expr)
+            .with_columns(pl.col("time").dt.date().alias("service_day"))
             .filter((pl.col("time") >= start) & (pl.col("time") < end))
             .filter(pl.col("train_line_ride_id").is_not_null())
             .filter(pl.col("train_line_station_num").is_not_null())
             .filter(pl.col("delay_in_min").is_not_null())
         )
         scan = scan.filter(pl.col("train_type").fill_null("") != "Bus")
+        scan = (
+            scan.group_by(["train_line_ride_id", "service_day", "train_line_station_num"])
+            .agg(
+                pl.col("station_name").sort_by("time").drop_nulls().last().alias("station_name"),
+                pl.col("eva").sort_by("time").drop_nulls().last().alias("eva"),
+                pl.col("train_number").sort_by("time").drop_nulls().last().alias("train_number"),
+                pl.col("line_number").sort_by("time").drop_nulls().last().alias("line_number"),
+                pl.col("final_destination_station")
+                .sort_by("time")
+                .drop_nulls()
+                .last()
+                .alias("final_destination_station"),
+                pl.col("delay_in_min").sort_by("time").last().alias("delay_in_min"),
+                pl.col("time").max().alias("time"),
+                pl.col("arrival_is_canceled").fill_null(False).any().alias("arrival_is_canceled"),
+                pl.col("departure_is_canceled").fill_null(False).any().alias("departure_is_canceled"),
+                pl.col("train_type").sort_by("time").drop_nulls().last().alias("train_type"),
+                pl.col("arrival_planned_time").sort_by("time").drop_nulls().last().alias("arrival_planned_time"),
+                pl.col("arrival_change_time").sort_by("time").drop_nulls().last().alias("arrival_change_time"),
+                pl.col("departure_planned_time").sort_by("time").drop_nulls().last().alias("departure_planned_time"),
+                pl.col("departure_change_time").sort_by("time").drop_nulls().last().alias("departure_change_time"),
+            )
+        )
         scans.append(scan)
 
     if not scans:
         return pl.DataFrame()
-    return pl.concat(scans).collect()
+    return pl.concat(scans).collect(engine="streaming").sort(
+        ["train_line_ride_id", "service_day", "train_line_station_num", "time"]
+    )
 
 
 def normalize_eva(value: object) -> str:
@@ -293,7 +318,6 @@ def movement_cache_paths(window_start: datetime, window_end: datetime) -> dict[s
     }
 
 
-@st.cache_data(show_spinner=False)
 def load_prepared_window(
     parquet_paths: tuple[str, ...], station_file: str, window_start: datetime, window_end: datetime
 ) -> tuple[pl.DataFrame, int, str]:
@@ -435,6 +459,7 @@ def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
                 + pl.col("trip_instance").cast(pl.Utf8)
             ).alias("train_label")
         )
+        .with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
         .sort(["first_order", "train_line_station_num"])
     )
     pdf = plot_df.to_pandas()
@@ -1449,11 +1474,18 @@ def main() -> None:
     st.title("Deutsche Bahn delay propagation")
 
     with st.sidebar:
-        selected_day = st.date_input("Day", value=date(2026, 7, 1), min_value=date(2024, 7, 1))
+        selected_day = st.date_input(
+            "Day",
+            value=date(2026, 7, 1),
+            min_value=PRELOADED_START_DAY,
+            max_value=PRELOADED_END_DAY,
+        )
+        st.caption(f"Preloaded months: {', '.join(PRELOADED_MONTHS)}")
 
     view = st.radio(
         "View",
-        ["Moving trains", "Diagnostics", "Propagation charts", "Train run", "Data"],
+        ["Data", "Moving trains", "Diagnostics", "Propagation charts", "Train run"],
+        index=0,
         horizontal=True,
     )
     needs_movement = view in {"Moving trains", "Diagnostics"}
@@ -1477,8 +1509,6 @@ def main() -> None:
         st.warning("No rows found for this day and filter.")
         return
 
-    day_df = add_trip_instance(day_df).with_columns(pl.col("delay_in_min").abs().clip(1, 90).alias("delay_abs"))
-
     movement_segments: list[dict[str, object]] = []
     movement_stats: dict[str, int] = {}
     movement_issues = pl.DataFrame()
@@ -1497,7 +1527,7 @@ def main() -> None:
     train_run_count = day_df["train_line_ride_id"].n_unique()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Rows in 48h window", f"{day_df.height:,}")
+    c1.metric("Stop events in 48h window", f"{day_df.height:,}")
     c2.metric("Train runs", f"{train_run_count:,}")
     c3.metric("Max delay", f"{int(day_df['delay_in_min'].max())} min")
     c4.metric("Mapped stations", f"{matched_station_count:,}")
@@ -1638,28 +1668,21 @@ def main() -> None:
         )
     elif view == "Data":
         rows_shown = st.slider("Rows shown", 20, 500, 100, 20)
-        with st.spinner("Building data summary..."):
-            summary = build_trip_summary(day_df)
-            top_trips = summary.head(rows_shown).with_row_index("first_order")
+        preview_columns = [
+            "time",
+            "station_name",
+            "train_type",
+            "train_number",
+            "line_number",
+            "final_destination_station",
+            "delay_in_min",
+            "arrival_is_canceled",
+            "departure_is_canceled",
+            "train_line_ride_id",
+            "train_line_station_num",
+        ]
         st.dataframe(
-            top_trips.select(
-                [
-                    "service_day",
-                    "trip_instance",
-                    "train_type",
-                    "train_number",
-                    "line_number",
-                    "destination",
-                    "first_seen",
-                    "last_seen",
-                    "station_count",
-                    "max_delay",
-                    "mean_delay",
-                    "arrival_cancelled",
-                    "departure_cancelled",
-                    "train_line_ride_id",
-                ]
-            ),
+            day_df.select([col for col in preview_columns if col in day_df.columns]).head(rows_shown),
             use_container_width=True,
             hide_index=True,
         )
