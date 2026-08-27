@@ -40,7 +40,8 @@ Monthly files are large. The smallest early files are around 100 MB; newer month
 
 This repo includes `render.yaml` for a free Render Docker web service. Render provides the `PORT`
 environment variable automatically; the Dockerfile uses it in production and falls back to port
-8501 locally.
+8501 locally. The Dockerfile also disables Streamlit's file watcher in production to avoid container
+`inotify` limits on Render.
 
 Render Free uses an ephemeral filesystem, so downloaded Hugging Face files and derived caches can
 be lost after restarts or idle spin-downs. The app will rebuild those caches on the next visit, which
