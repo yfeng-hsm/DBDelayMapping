@@ -72,6 +72,21 @@ https://github.com/yfeng-hsm/DBDelayMapping
 This public-URL method is useful for testing, but it usually has fewer GitHub integration features
 than connecting the repository through your GitHub account.
 
+If Render shows `Not Found` when you use the public Git URL, the repository is probably private or
+Render cannot access it. Use one of these fixes:
+
+- Make the GitHub repository public, then retry the public Git URL.
+- Keep the repository private and connect GitHub inside Render instead.
+- Use Hugging Face Spaces for a simpler Streamlit-only deployment.
+
+If the deployed `*.onrender.com` page itself shows plain `Not Found`, the service probably was not
+created, failed before Render assigned the public route, or has a different URL. Open the service in
+the Render Dashboard and copy the URL from the service header instead of assuming it is exactly:
+
+```text
+https://db-delay-mapping.onrender.com
+```
+
 ### Option C: Render CLI
 
 Render also provides a CLI. This is useful if the browser flow is unreliable, but it still requires
@@ -80,8 +95,17 @@ logging in to Render and connecting GitHub access for private repositories.
 ### Alternative: Hugging Face Spaces
 
 For a Streamlit app, Hugging Face Spaces is often the simplest free hosting option. Create a new
-Space with the Streamlit SDK, then upload `app.py`, `requirements.txt`, and the relevant project
-files. It can be easier than Render for demos, but Docker gives you more control over the runtime.
+Space with the Streamlit SDK, then upload `app.py`, `requirements.txt`, `README.md`, and any required
+configuration files. It can be easier than Render for demos, but Docker gives you more control over
+the runtime.
+
+Minimal Hugging Face Spaces steps:
+
+1. Create a new Space at https://huggingface.co/new-space.
+2. Choose **Streamlit** as the SDK.
+3. Upload the project files or connect a Git repository.
+4. Keep the same `requirements.txt`.
+5. Open the Space after the first build finishes.
 
 ## What It Shows
 
