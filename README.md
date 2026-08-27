@@ -1,4 +1,4 @@
-# DB Delay Propagation Visualization
+# German trains
 
 This Dockerized Streamlit app visualizes one day of Deutsche Bahn delay propagation using the Hugging Face dataset `piebro/deutsche-bahn-data`.
 
@@ -69,13 +69,14 @@ The app is configured for these months:
 2026-07
 ```
 
-The date picker is limited to `2026-05-01` through `2026-07-30`. The app uses a 48-hour playback
-window, so `2026-07-31` would require the August Parquet file.
+The date picker defaults to `2026-06-10` and is limited to `2026-05-01` through `2026-07-30`. The app
+uses a 36-hour playback window.
 
 Small free hosting tiers can have limited memory. The full moving-train map can still be memory-heavy.
-Start with the `Data` view, then switch to `Moving trains` or `Diagnostics` after the page has loaded.
+The default view is `Moving trains`; points below 30 minutes of delay are hidden by default and can be
+shown with the `<30 min` checkbox.
 
-To reduce memory use on small hosts, the app loads each 48-hour window as stop-level events: one row
+To reduce memory use on small hosts, the app loads each 36-hour window as stop-level events: one row
 per `train_line_ride_id`, `service_day`, and `train_line_station_num`. It does not keep every raw
 timetable update row in memory.
 
@@ -86,7 +87,7 @@ timetable update row in memory.
   - red trails show delayed movement.
   - brighter/larger points indicate higher delay.
   - Germany is drawn with a Mercator projection and fixed aspect ratio.
-  - playback uses a continuous 48-hour window from the selected day, so the animation moves directly into the next day instead of cutting at midnight.
+  - playback uses a continuous 36-hour window from the selected day, so the animation moves directly into the next day instead of cutting at midnight.
 - Hourly p90 delay by train type.
 - A delay propagation heatmap:
   - x-axis: stop sequence within a train run.

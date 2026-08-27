@@ -1162,7 +1162,7 @@ def make_train_flow_animation(
   <div style="position:absolute;left:24px;top:46px;display:flex;align-items:center;gap:10px;font:13px system-ui, sans-serif;color:#cbd7df;background:rgba(2,6,9,.64);padding:6px 8px;border:1px solid #24343e">
     <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-fern" type="checkbox" checked style="accent-color:#ff5f55"><span>Fernverkehr</span></label>
     <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-regional" type="checkbox" checked style="accent-color:#ff5f55"><span>Regionalverkehr</span></label>
-    <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-under-30" type="checkbox" checked style="accent-color:#ff5f55"><span>&lt;30 min</span></label>
+    <label style="display:flex;align-items:center;gap:6px"><input id="train-flow-under-30" type="checkbox" style="accent-color:#ff5f55"><span>&lt;30 min</span></label>
   </div>
   <div id="train-flow-clock" style="position:absolute;right:28px;top:20px;font:700 28px ui-monospace, SFMono-Regular, Menlo, monospace;color:#fff"></div>
   <div id="train-flow-count" style="position:absolute;right:30px;top:58px;font:13px ui-monospace, SFMono-Regular, Menlo, monospace;color:#aebdc6"></div>
@@ -1494,13 +1494,13 @@ def make_train_flow_animation(
 
 
 def main() -> None:
-    st.set_page_config(page_title="DB Delay Propagation", layout="wide")
-    st.title("Deutsche Bahn delay propagation")
+    st.set_page_config(page_title="German trains", layout="wide")
+    st.title("German trains")
 
     with st.sidebar:
         selected_day = st.date_input(
             "Day",
-            value=date(2026, 7, 1),
+            value=date(2026, 6, 10),
             min_value=PRELOADED_START_DAY,
             max_value=PRELOADED_END_DAY,
         )
@@ -1508,14 +1508,14 @@ def main() -> None:
 
     view = st.radio(
         "View",
-        ["Data", "Moving trains", "Diagnostics", "Propagation charts", "Train run"],
+        ["Moving trains", "Diagnostics", "Propagation charts", "Train run", "Data"],
         index=0,
         horizontal=True,
     )
     needs_movement = view in {"Moving trains", "Diagnostics"}
 
     window_start = datetime.combine(selected_day, time.min)
-    window_end = window_start + timedelta(days=2)
+    window_end = window_start + timedelta(hours=36)
     needed_months = [(window_start.year, window_start.month)]
     if next_month_start(window_start) < window_end:
         needed_months.append((window_end.year, window_end.month))
@@ -1524,7 +1524,7 @@ def main() -> None:
         parquet_paths = tuple(ensure_month_file(year, month) for year, month in needed_months)
     with st.spinner("Preparing station coordinate file..."):
         station_file = ensure_station_file()
-    with st.spinner("Loading prepared 48h playback window..."):
+    with st.spinner("Loading prepared 36h playback window..."):
         day_df, matched_station_count, prepared_source = load_prepared_window(
             parquet_paths, station_file, window_start, window_end
         )
@@ -1551,7 +1551,7 @@ def main() -> None:
     train_run_count = day_df["train_line_ride_id"].n_unique()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Stop events in 48h window", f"{day_df.height:,}")
+    c1.metric("Stop events in 36h window", f"{day_df.height:,}")
     c2.metric("Train runs", f"{train_run_count:,}")
     c3.metric("Max delay", f"{int(day_df['delay_in_min'].max())} min")
     c4.metric("Mapped stations", f"{matched_station_count:,}")
