@@ -5,6 +5,7 @@ services:
     plan: free
     region: frankfurt
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /_stcore/health
     autoDeploy: true
     envVars:
       - key: HF_DATASET_BASE_URL
