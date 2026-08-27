@@ -1,3 +1,11 @@
+---
+title: DB Delay Mapping
+sdk: docker
+app_port: 8501
+pinned: false
+short_description: Visualize Deutsche Bahn delay propagation from public timetable data.
+---
+
 # DB Delay Propagation Visualization
 
 This Dockerized Streamlit app visualizes one day of Deutsche Bahn delay propagation using the Hugging Face dataset `piebro/deutsche-bahn-data`.
@@ -36,13 +44,23 @@ The first run downloads the selected monthly Parquet file into:
 
 Monthly files are large. The smallest early files are around 100 MB; newer monthly files are around 600 MB.
 
-## Deploy On Render Free
+## Deploy On Hugging Face Spaces
 
-This repo includes `render.yaml` for a free Render Docker web service. Render provides the `PORT`
-environment variable automatically; the Dockerfile uses it in production and falls back to port
-8501 locally. The Dockerfile also disables Streamlit's file watcher in production to avoid container
-`inotify` limits on Render. Render checks `/_stcore/health` before routing traffic to a deployed
-instance.
+Use a Hugging Face **Docker Space**. Hugging Face has deprecated Streamlit as a default built-in Space
+SDK, so this repository uses Docker metadata at the top of this README:
+
+```yaml
+sdk: docker
+app_port: 8501
+```
+
+Create a Space:
+
+1. Open https://huggingface.co/new-space.
+2. Choose **Docker** as the SDK.
+3. Push or upload this repository.
+4. Keep `app.py`, `requirements.txt`, `Dockerfile`, and `scripts/preload_data.py` in the Space repo.
+5. Wait for the build to finish, then open the Space app.
 
 The Docker image preloads these monthly Parquet files during build:
 
@@ -55,74 +73,13 @@ The Docker image preloads these monthly Parquet files during build:
 The online date picker is limited to `2026-05-01` through `2026-07-30`. The app uses a 48-hour
 playback window, so `2026-07-31` would require the August Parquet file.
 
-Render Free uses an ephemeral filesystem and only a small memory allowance. Preloading avoids the
-large runtime download, but the full moving-train map can still be memory-heavy. Start with the
-`Data` view, then switch to `Moving trains` or `Diagnostics` after the page has loaded.
+Small free hosting tiers can have limited memory. Preloading avoids the large runtime download, but
+the full moving-train map can still be memory-heavy. Start with the `Data` view, then switch to
+`Moving trains` or `Diagnostics` after the page has loaded.
 
 To reduce memory use on small hosts, the app loads each 48-hour window as stop-level events: one row
 per `train_line_ride_id`, `service_day`, and `train_line_station_num`. It does not keep every raw
 timetable update row in memory.
-
-### Option A: Render Dashboard
-
-1. Open https://dashboard.render.com in your normal browser.
-2. Click **New** -> **Blueprint**.
-3. Connect the GitHub repository `yfeng-hsm/DBDelayMapping`.
-4. Select the free plan if Render asks for a plan.
-5. Create the service from `render.yaml`.
-
-### Option B: Render Web Service From Public Git URL
-
-If the repository is public and GitHub authorization is inconvenient:
-
-1. Click **New** -> **Web Service**.
-2. Choose **Public Git Repository**.
-3. Use:
-
-```text
-https://github.com/yfeng-hsm/DBDelayMapping
-```
-
-4. Set runtime to Docker, plan to Free, and region to Frankfurt.
-5. Render will build the Dockerfile.
-
-This public-URL method is useful for testing, but it usually has fewer GitHub integration features
-than connecting the repository through your GitHub account.
-
-If Render shows `Not Found` when you use the public Git URL, the repository is probably private or
-Render cannot access it. Use one of these fixes:
-
-- Make the GitHub repository public, then retry the public Git URL.
-- Keep the repository private and connect GitHub inside Render instead.
-- Use Hugging Face Spaces for a simpler Streamlit-only deployment.
-
-If the deployed `*.onrender.com` page itself shows plain `Not Found`, the service probably was not
-created, failed before Render assigned the public route, or has a different URL. Open the service in
-the Render Dashboard and copy the URL from the service header instead of assuming it is exactly:
-
-```text
-https://db-delay-mapping.onrender.com
-```
-
-### Option C: Render CLI
-
-Render also provides a CLI. This is useful if the browser flow is unreliable, but it still requires
-logging in to Render and connecting GitHub access for private repositories.
-
-### Alternative: Hugging Face Spaces
-
-For a Streamlit app, Hugging Face Spaces is often the simplest free hosting option. Create a new
-Space with the Streamlit SDK, then upload `app.py`, `requirements.txt`, `README.md`, and any required
-configuration files. It can be easier than Render for demos, but Docker gives you more control over
-the runtime.
-
-Minimal Hugging Face Spaces steps:
-
-1. Create a new Space at https://huggingface.co/new-space.
-2. Choose **Streamlit** as the SDK.
-3. Upload the project files or connect a Git repository.
-4. Keep the same `requirements.txt`.
-5. Open the Space after the first build finishes.
 
 ## What It Shows
 

@@ -19,7 +19,7 @@ BASE_URL = os.getenv(
     "HF_DATASET_BASE_URL",
     "https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main/monthly_processed_data",
 )
-CACHE_DIR = Path("/app/data/cache")
+CACHE_DIR = Path(os.getenv("DATA_CACHE_DIR", "/app/data/cache"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 DERIVED_CACHE_DIR = CACHE_DIR / "derived"
 DERIVED_CACHE_DIR.mkdir(parents=True, exist_ok=True)

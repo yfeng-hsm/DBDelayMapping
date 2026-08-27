@@ -5,7 +5,8 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./data:/app/data
+      - ./data:/home/user/app/data
     environment:
       HF_DATASET_REPO: piebro/deutsche-bahn-data
       HF_DATASET_BASE_URL: https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main/monthly_processed_data
+      DATA_CACHE_DIR: /home/user/app/data/cache
