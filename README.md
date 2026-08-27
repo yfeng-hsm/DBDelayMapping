@@ -1,11 +1,3 @@
----
-title: DB Delay Mapping
-sdk: docker
-app_port: 8501
-pinned: false
-short_description: Visualize Deutsche Bahn delay propagation from public timetable data.
----
-
 # DB Delay Propagation Visualization
 
 This Dockerized Streamlit app visualizes one day of Deutsche Bahn delay propagation using the Hugging Face dataset `piebro/deutsche-bahn-data`.
@@ -44,25 +36,28 @@ The first run downloads the selected monthly Parquet file into:
 
 Monthly files are large. The smallest early files are around 100 MB; newer monthly files are around 600 MB.
 
-## Deploy On Hugging Face Spaces
+## Deploy On Streamlit Community Cloud
 
-Use a Hugging Face **Docker Space**. Hugging Face has deprecated Streamlit as a default built-in Space
-SDK, so this repository uses Docker metadata at the top of this README:
+Streamlit Community Cloud is the simplest free option for this app because it runs `app.py` directly
+from GitHub and installs packages from `requirements.txt`.
 
-```yaml
-sdk: docker
-app_port: 8501
-```
+1. Open https://share.streamlit.io.
+2. Sign in with GitHub.
+3. Deploy from the repository `yfeng-hsm/DBDelayMapping`.
+4. Set the main file path to `app.py`.
+5. In advanced settings, use Python `3.12`.
 
-Create a Space:
+If dependency installation fails, expand the build log and look above the final `Installing rich`
+lines. The real error is usually earlier in the log.
 
-1. Open https://huggingface.co/new-space.
-2. Choose **Docker** as the SDK.
-3. Push or upload this repository.
-4. Keep `app.py`, `requirements.txt`, `Dockerfile`, and `scripts/preload_data.py` in the Space repo.
-5. Wait for the build to finish, then open the Space app.
+If the log mentions `cpython-314` and `Failed to download and build pyarrow==21.0.0`, the deployment
+is using Python 3.14 with an old PyArrow pin. The current `requirements.txt` uses `pyarrow>=22`, which
+has Python 3.14 wheels. Using Python 3.12 in advanced settings is still recommended for consistency
+with the Dockerfile.
 
-The Docker image preloads these monthly Parquet files during build:
+## Data Window
+
+The app is configured for these months:
 
 ```text
 2026-05
@@ -70,12 +65,11 @@ The Docker image preloads these monthly Parquet files during build:
 2026-07
 ```
 
-The online date picker is limited to `2026-05-01` through `2026-07-30`. The app uses a 48-hour
-playback window, so `2026-07-31` would require the August Parquet file.
+The date picker is limited to `2026-05-01` through `2026-07-30`. The app uses a 48-hour playback
+window, so `2026-07-31` would require the August Parquet file.
 
-Small free hosting tiers can have limited memory. Preloading avoids the large runtime download, but
-the full moving-train map can still be memory-heavy. Start with the `Data` view, then switch to
-`Moving trains` or `Diagnostics` after the page has loaded.
+Small free hosting tiers can have limited memory. The full moving-train map can still be memory-heavy.
+Start with the `Data` view, then switch to `Moving trains` or `Diagnostics` after the page has loaded.
 
 To reduce memory use on small hosts, the app loads each 48-hour window as stop-level events: one row
 per `train_line_ride_id`, `service_day`, and `train_line_station_num`. It does not keep every raw
