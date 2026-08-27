@@ -33,7 +33,7 @@ FERN_TYPES = ("ICE", "IC", "EC", "ECE", "TGV", "RJ", "RJX", "NJ", "EN", "FLX")
 MAX_SEGMENT_SPEED_KMH = 380
 MIN_SPEED_CHECK_DISTANCE_KM = 15
 PREPARED_WINDOW_CACHE_VERSION = "prepared-v1"
-MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v7"
+MOVEMENT_SEGMENT_CACHE_VERSION = "segments-v8"
 GERMANY_LON_MIN = 5.2
 GERMANY_LON_MAX = 15.6
 GERMANY_LAT_MIN = 47.0
@@ -776,10 +776,22 @@ def make_issue_segment_map(issue: dict[str, object]) -> go.Figure:
             line=dict(width=4, color="#ff0000"),
             marker=dict(size=[11, 13], color=["#f8b9bf", "#ff0000"], line=dict(width=0)),
             customdata=[
-                [issue.get("segment_start_time"), issue.get("gap_min"), issue.get("distance_km"), issue.get("speed_kmh")],
-                [issue.get("next_arrival_time"), issue.get("gap_min"), issue.get("distance_km"), issue.get("speed_kmh")],
+                [
+                    issue.get("segment_start_time"),
+                    issue.get("gap_min"),
+                    issue.get("speed_gap_min"),
+                    issue.get("distance_km"),
+                    issue.get("speed_kmh"),
+                ],
+                [
+                    issue.get("next_arrival_time"),
+                    issue.get("gap_min"),
+                    issue.get("speed_gap_min"),
+                    issue.get("distance_km"),
+                    issue.get("speed_kmh"),
+                ],
             ],
-            hovertemplate="<b>%{text}</b><br>%{customdata[0]}<br>Gap %{customdata[1]:.1f} min<br>Distance %{customdata[2]:.1f} km<br>Speed %{customdata[3]:.1f} km/h<extra></extra>",
+            hovertemplate="<b>%{text}</b><br>%{customdata[0]}<br>Raw gap %{customdata[1]:.1f} min<br>Speed gap %{customdata[2]:.1f} min<br>Distance %{customdata[3]:.1f} km<br>Speed %{customdata[4]:.1f} km/h<extra></extra>",
             showlegend=False,
         )
     )
@@ -887,6 +899,12 @@ def build_movement_segments(
         .filter(pl.col("next_arrival_time").is_not_null())
         .with_columns((pl.col("next_arrival_time") - pl.col("segment_start_time")).dt.total_minutes().alias("gap_min"))
         .with_columns(
+            pl.when(pl.col("gap_min") <= 0)
+            .then(pl.lit(1))
+            .otherwise(pl.col("gap_min"))
+            .alias("speed_gap_min")
+        )
+        .with_columns(
             (
                 (
                     (
@@ -900,7 +918,7 @@ def build_movement_segments(
                 ** 0.5
             ).alias("distance_km")
         )
-        .with_columns((pl.col("distance_km") / (pl.col("gap_min") / 60)).alias("speed_kmh"))
+        .with_columns((pl.col("distance_km") / (pl.col("speed_gap_min") / 60)).alias("speed_kmh"))
         .with_columns(
             (
                 (pl.col("distance_km") >= MIN_SPEED_CHECK_DISTANCE_KM)
@@ -959,6 +977,7 @@ def build_movement_segments(
                 "segment_start_time",
                 "next_arrival_time",
                 "gap_min",
+                "speed_gap_min",
                 "distance_km",
                 "speed_kmh",
                 "lat",
@@ -1517,7 +1536,9 @@ def main() -> None:
         else:
             issues = (
                 movement_issues.with_columns(
-                    pl.when(pl.col("is_implausible_speed"))
+                    pl.when(pl.col("gap_min") <= 0)
+                    .then(pl.lit("Zero/negative gap"))
+                    .when(pl.col("is_implausible_speed"))
                     .then(pl.lit("Implausible speed"))
                     .when(pl.col("gap_min") < 2)
                     .then(pl.lit("Too short"))
@@ -1539,7 +1560,8 @@ def main() -> None:
                 int(issue["issue_rank"]): (
                     f"{int(issue['issue_rank']) + 1}. {issue['issue_type']} | "
                     f"{issue['station_name']} -> {issue['next_station_name']} | "
-                    f"gap {issue['gap_min']:.1f} min | speed {issue['speed_kmh']:.1f} km/h"
+                    f"gap {issue['gap_min']:.1f} min | speed gap {issue['speed_gap_min']:.1f} min | "
+                    f"speed {issue['speed_kmh']:.1f} km/h"
                 )
                 for issue in issue_options
             }
@@ -1553,7 +1575,8 @@ def main() -> None:
             st.caption(
                 f"{selected_issue['issue_type']} | {selected_issue['service_day']} #{selected_issue['trip_instance']} | "
                 f"{selected_issue['station_name']} -> {selected_issue['next_station_name']} | "
-                f"gap {selected_issue['gap_min']:.1f} min, distance {selected_issue['distance_km']:.1f} km, "
+                f"gap {selected_issue['gap_min']:.1f} min, speed gap {selected_issue['speed_gap_min']:.1f} min, "
+                f"distance {selected_issue['distance_km']:.1f} km, "
                 f"speed {selected_issue['speed_kmh']:.1f} km/h"
             )
             st.plotly_chart(

@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: db-delay-mapping
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: HF_DATASET_BASE_URL
+        value: https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main/monthly_processed_data
+      - key: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+        value: "false"
