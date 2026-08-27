@@ -91,12 +91,11 @@ timetable update row in memory.
 - Hourly p90 delay by train type.
 - A delay propagation heatmap:
   - x-axis: stop sequence within a train run.
-  - y-axis: selected train run; the default selection is the most delayed train run in the window.
+  - y-axis: the five train runs with the highest maximum delay in the window.
   - color: delay in minutes.
 - A selected train run map and curve showing delay along its stop sequence.
-- A table of the most delayed train runs for the selected day.
 
-The main tabs are ordered as `Moving trains`, `Propagation`, `Train run`, `Data`, and `Diagnostics`.
+The main tabs are ordered as `Moving trains`, `Propagation`, `Train run`, and `Diagnostics`.
 
 ## License
 
@@ -128,11 +127,4 @@ The Germany outline is cached under:
 
 ```text
 ./data/cache/germany-states.geo.json
-```
-
-Recommended next join for ML/GNN:
-
-```text
-station_features(eva, station_name, lat, lon, state, city, station_category)
-route_edges(from_eva, to_eva, distance_m, route_type, historical_delay_stats)
 ```

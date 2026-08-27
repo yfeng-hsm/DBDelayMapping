@@ -516,6 +516,7 @@ def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
         .sort(["first_order", "train_line_station_num"])
     )
     pdf = plot_df.to_pandas()
+    train_label_order = list(pdf["train_label"].drop_duplicates())[::-1]
     fig = px.scatter(
         pdf,
         x="train_line_station_num",
@@ -534,6 +535,7 @@ def make_heatmap(df: pl.DataFrame, top_trips: pl.DataFrame) -> go.Figure:
         },
         color_continuous_scale="RdYlGn_r",
         range_color=[-5, max(20, int(pdf["delay_in_min"].quantile(0.95))) if len(pdf) else 20],
+        category_orders={"train_label": train_label_order},
         title="Delay propagation across selected train runs",
         labels={
             "train_line_station_num": "Stop sequence",
@@ -1139,7 +1141,7 @@ def build_hourly_coverage(df: pl.DataFrame, window_start: datetime, window_end: 
         current += timedelta(hours=1)
     timeline = pl.DataFrame(hours).with_columns(pl.col("hour").cast(pl.Datetime("us")))
     coverage = (
-        df.with_columns(pl.col("event_time").dt.truncate("1h").alias("hour"))
+        df.with_columns(pl.col("time").dt.truncate("1h").alias("hour"))
         .group_by("hour")
         .agg(
             pl.len().alias("rows"),
@@ -1525,12 +1527,6 @@ def make_train_flow_animation(
 def main() -> None:
     st.set_page_config(page_title="German Trains' Delay Map", layout="wide")
     st.title("German Trains' Delay Map")
-    st.markdown(
-        "[GitHub](https://github.com/yfeng-hsm/DBDelayMapping) | "
-        "Data: public timetable-derived data from "
-        "[piebro/deutsche-bahn-data](https://huggingface.co/datasets/piebro/deutsche-bahn-data). "
-        "Disclaimer: research visualization only; not affiliated with Deutsche Bahn and not for operational decisions."
-    )
 
     with st.sidebar:
         selected_day = st.date_input(
@@ -1543,7 +1539,7 @@ def main() -> None:
 
     view = st.radio(
         "View",
-        ["Moving trains", "Propagation", "Train run", "Data", "Diagnostics"],
+        ["Moving trains", "Propagation", "Train run", "Diagnostics"],
         index=0,
         horizontal=True,
     )
@@ -1679,30 +1675,10 @@ def main() -> None:
         if summary.is_empty():
             st.warning("No train runs with at least three observed stops.")
             return
-        selected_run = run_selectbox(
-            "Most delayed train run",
-            summary,
-            key=f"propagation-run-select-{selected_day:%Y-%m-%d}",
-        )
-        selected_ride_id = selected_run["train_line_ride_id"]
-        selected_service_day = selected_run["service_day"]
-        selected_trip_instance = int(selected_run["trip_instance"])
-        selected_trip = (
-            summary.filter(
-                (pl.col("train_line_ride_id") == selected_ride_id)
-                & (pl.col("service_day") == selected_service_day)
-                & (pl.col("trip_instance") == selected_trip_instance)
-            )
-            .with_row_index("first_order")
-        )
-        st.caption(f"Selected: {format_run_option(int(selected_run['run_rank']), selected_run)}")
+        top_trips = summary.head(5).with_row_index("first_order")
+        st.caption("Top 5 train runs by maximum delay in the selected 36-hour window.")
         st.plotly_chart(make_hourly_chart(day_df), use_container_width=True)
-        st.plotly_chart(make_heatmap(day_df, selected_trip), use_container_width=True)
-        st.plotly_chart(
-            make_trip_line(day_df, selected_ride_id, selected_service_day, selected_trip_instance),
-            use_container_width=True,
-            key=f"propagation-line-{selected_service_day:%Y-%m-%d}-{selected_trip_instance}-{selected_ride_id}",
-        )
+        st.plotly_chart(make_heatmap(day_df, top_trips), use_container_width=True)
     elif view == "Train run":
         with st.spinner("Building train run summary..."):
             summary = build_trip_summary(day_df)
@@ -1738,26 +1714,14 @@ def main() -> None:
             use_container_width=True,
             key=f"train-run-line-{chart_key}",
         )
-    elif view == "Data":
-        rows_shown = st.slider("Rows shown", 20, 500, 100, 20)
-        preview_columns = [
-            "time",
-            "station_name",
-            "train_type",
-            "train_number",
-            "line_number",
-            "final_destination_station",
-            "delay_in_min",
-            "arrival_is_canceled",
-            "departure_is_canceled",
-            "train_line_ride_id",
-            "train_line_station_num",
-        ]
-        st.dataframe(
-            day_df.select([col for col in preview_columns if col in day_df.columns]).head(rows_shown),
-            use_container_width=True,
-            hide_index=True,
-        )
+
+    st.markdown("---")
+    st.markdown(
+        "[GitHub](https://github.com/yfeng-hsm/DBDelayMapping)  \n"
+        "Data: public timetable-derived data from "
+        "[piebro/deutsche-bahn-data](https://huggingface.co/datasets/piebro/deutsche-bahn-data).  \n"
+        "Disclaimer: research visualization only; not affiliated with Deutsche Bahn and not for operational decisions."
+    )
 
 
 if __name__ == "__main__":
