@@ -56,6 +56,7 @@ GERMANY_GEOJSON_URL = (
     "https://raw.githubusercontent.com/isellsoap/deutschlandGeoJSON/main/2_bundeslaender/1_sehr_hoch.geo.json"
 )
 GERMANY_GEOJSON = CACHE_DIR / "germany-states.geo.json"
+DATA_COMPLETENESS_FILE = Path(__file__).resolve().parent / "static" / "data-completeness-2026-06-07.json"
 FERN_TYPES = ("ICE", "IC", "EC", "ECE", "TGV", "RJ", "RJX", "NJ", "EN", "FLX")
 MAX_SEGMENT_SPEED_KMH = 380
 MIN_SPEED_CHECK_DISTANCE_KM = 15
@@ -610,6 +611,192 @@ def make_hourly_chart(df: pl.DataFrame) -> go.Figure:
     )
     fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30))
     return fig
+
+
+@st.cache_data(show_spinner=False)
+def load_data_completeness() -> dict[str, object]:
+    with DATA_COMPLETENESS_FILE.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def data_completeness_cells(data: dict[str, object]) -> list[dict[str, object]]:
+    cells: list[dict[str, object]] = []
+    offset = 0
+    for month_data in data["months"]:
+        for cell in month_data["cells"]:
+            cells.append(
+                {
+                    **cell,
+                    "month": month_data["month"],
+                    "seq_day": offset + int(cell["day_num"]),
+                }
+            )
+        offset += int(month_data["days"])
+    return cells
+
+
+def data_completeness_score(cell: dict[str, object], max_runs: int) -> float:
+    rows = int(cell["rows"])
+    if rows == 0:
+        return 0
+    if rows < 100:
+        return 5
+    if rows < 1000:
+        return 15
+    return 20 + 80 * int(cell["runs"]) / max(1, max_runs)
+
+
+def make_data_completeness_heatmap(data: dict[str, object]) -> go.Figure:
+    cells = data_completeness_cells(data)
+    by_key = {(int(cell["seq_day"]), int(cell["hour"])): cell for cell in cells}
+    max_runs = int(data["max_hourly_runs"])
+    total_days = sum(int(month_data["days"]) for month_data in data["months"])
+    hours = list(range(24))
+    day_numbers = list(range(1, total_days + 1))
+    z: list[list[float]] = []
+    customdata: list[list[list[object]]] = []
+    for seq_day in day_numbers:
+        row = []
+        custom_row = []
+        for hour in hours:
+            cell = by_key[(seq_day, hour)]
+            row.append(data_completeness_score(cell, max_runs))
+            custom_row.append([cell["day"], cell["runs"], cell["rows"], cell["stations"]])
+        z.append(row)
+        customdata.append(custom_row)
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=hours,
+            y=day_numbers,
+            customdata=customdata,
+            zmin=0,
+            zmax=100,
+            colorscale=[
+                [0.0, "#6d1f1f"],
+                [0.049, "#6d1f1f"],
+                [0.05, "#c34a43"],
+                [0.149, "#c34a43"],
+                [0.15, "#d59b3a"],
+                [0.199, "#d59b3a"],
+                [0.2, "#071016"],
+                [0.46, "#1f667f"],
+                [0.72, "#54a8c9"],
+                [1.0, "#d8f3ff"],
+            ],
+            colorbar=dict(
+                title="Coverage",
+                tickmode="array",
+                tickvals=[0, 5, 15, 45, 75, 100],
+                ticktext=["0 rows", "<100", "100-999", "medium", "high", "max"],
+            ),
+            hovertemplate=(
+                "<b>%{customdata[0]} %{x:02d}:00</b><br>"
+                "Train runs %{customdata[1]:,}<br>"
+                "Raw rows %{customdata[2]:,}<br>"
+                "Stations %{customdata[3]:,}<extra></extra>"
+            ),
+        )
+    )
+    fig.add_shape(
+        type="rect",
+        x0=0.5,
+        x1=5.5,
+        y0=0.5,
+        y1=total_days + 0.5,
+        line=dict(color="#c34a43", width=1.4, dash="dash"),
+        fillcolor="rgba(0,0,0,0)",
+    )
+    fig.add_hline(y=30.5, line_width=1.1, line_color="#eef3f8", opacity=0.65)
+    fig.add_annotation(x=23.4, y=30.5, text="July starts", showarrow=False, xanchor="right", yshift=10)
+    fig.add_annotation(
+        x=1.1,
+        y=total_days + 2.4,
+        text="Repeated likely collection gaps: 01:00-05:59, mainly in July",
+        showarrow=False,
+        xanchor="left",
+        font=dict(color="#f99a9f"),
+    )
+    tickvals = [1, 5, 10, 15, 20, 25, 30, 31, 35, 40, 45, 50, 55, 60, 61]
+    ticktext = [
+        "Jun 1",
+        "Jun 5",
+        "Jun 10",
+        "Jun 15",
+        "Jun 20",
+        "Jun 25",
+        "Jun 30",
+        "Jul 1",
+        "Jul 5",
+        "Jul 10",
+        "Jul 15",
+        "Jul 20",
+        "Jul 25",
+        "Jul 30",
+        "Jul 31",
+    ]
+    fig.update_layout(
+        title="June-July 2026 hourly train-run coverage",
+        height=760,
+        paper_bgcolor="#020609",
+        plot_bgcolor="#020609",
+        font=dict(color="#eef3f8"),
+        margin=dict(l=24, r=24, t=64, b=42),
+        xaxis=dict(title="Hour of day", tickmode="array", tickvals=list(range(0, 24, 2))),
+        yaxis=dict(title="Date", tickmode="array", tickvals=tickvals, ticktext=ticktext, autorange="reversed"),
+    )
+    return fig
+
+
+def make_data_completeness_gap_chart(data: dict[str, object]) -> go.Figure:
+    fig = go.Figure()
+    for month_data, color in zip(data["months"], ["#69b3d0", "#c34a43"]):
+        stats = month_data["hour_stats"]
+        fig.add_bar(
+            x=[stat["hour"] for stat in stats],
+            y=[stat["low_days_rows_lt_100"] for stat in stats],
+            name=month_data["month"],
+            marker_color=color,
+            hovertemplate="%{fullData.name}<br>%{x:02d}:00<br>%{y} low-coverage days<extra></extra>",
+        )
+    fig.update_layout(
+        title="Days flagged as likely collection gaps by hour",
+        height=300,
+        barmode="group",
+        paper_bgcolor="#020609",
+        plot_bgcolor="#020609",
+        font=dict(color="#eef3f8"),
+        margin=dict(l=24, r=24, t=58, b=42),
+        xaxis=dict(title="Hour of day", tickmode="array", tickvals=list(range(0, 24, 2)), gridcolor="#182630"),
+        yaxis=dict(title="Days with raw rows < 100", gridcolor="#182630"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def render_data_completeness() -> None:
+    data = load_data_completeness()
+    june, july = data["months"]
+    june_low_days = sum(stat["low_days_rows_lt_100"] for stat in june["hour_stats"])
+    july_low_days = sum(stat["low_days_rows_lt_100"] for stat in july["hour_stats"])
+    july_zero_days_03_04 = sum(july["hour_stats"][hour]["zero_days"] for hour in [3, 4])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("June raw rows", f"{june['total_rows']:,}")
+    c2.metric("July raw rows", f"{july['total_rows']:,}")
+    c3.metric("June low hour-days", f"{june_low_days:,}")
+    c4.metric("July low hour-days", f"{july_low_days:,}")
+    st.caption(
+        "Static completeness audit for 2026-06 and 2026-07. "
+        "Non-Bus records are grouped by event hour; likely gap means fewer than 100 raw rows in that hour."
+    )
+    st.plotly_chart(make_data_completeness_heatmap(data), width="stretch")
+    st.plotly_chart(make_data_completeness_gap_chart(data), width="stretch")
+    st.caption(
+        f"July has {july_zero_days_03_04} zero-record hour-days at 03:00 and 04:00 combined; "
+        "June has no hour with fewer than 100 raw rows under the same rule."
+    )
 
 
 def style_delay_geo(fig: go.Figure, title: str, height: int = 780) -> go.Figure:
@@ -1545,6 +1732,16 @@ def make_train_flow_animation(
 """
 
 
+def render_footer() -> None:
+    st.markdown("---")
+    st.markdown(
+        "[GitHub](https://github.com/yfeng-hsm/DBDelayMapping)  \n"
+        "Data: public timetable-derived data from "
+        "[piebro/deutsche-bahn-data](https://huggingface.co/datasets/piebro/deutsche-bahn-data).  \n"
+        "Disclaimer: research visualization only; not affiliated with Deutsche Bahn and not for operational decisions."
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="German Trains' Delay Map", layout="wide")
     st.title("German Trains' Delay Map")
@@ -1560,10 +1757,15 @@ def main() -> None:
 
     view = st.radio(
         "View",
-        ["Moving trains", "Propagation", "Train run", "Diagnostics"],
+        ["Moving trains", "Propagation", "Train run", "Data completeness", "Diagnostics"],
         index=0,
         horizontal=True,
     )
+    if view == "Data completeness":
+        render_data_completeness()
+        render_footer()
+        return
+
     needs_movement = view in {"Moving trains", "Diagnostics"}
 
     window_start = datetime.combine(selected_day, time(6, 0))
@@ -1736,13 +1938,7 @@ def main() -> None:
             key=f"train-run-line-{chart_key}",
         )
 
-    st.markdown("---")
-    st.markdown(
-        "[GitHub](https://github.com/yfeng-hsm/DBDelayMapping)  \n"
-        "Data: public timetable-derived data from "
-        "[piebro/deutsche-bahn-data](https://huggingface.co/datasets/piebro/deutsche-bahn-data).  \n"
-        "Disclaimer: research visualization only; not affiliated with Deutsche Bahn and not for operational decisions."
-    )
+    render_footer()
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ ARG PRELOAD_MONTHS=2026-05,2026-06,2026-07
 ENV DATA_CACHE_DIR=/home/user/app/data/cache
 RUN python scripts/preload_data.py --months "$PRELOAD_MONTHS" --include-stations --include-geojson
 
+COPY --chown=user static static
 COPY --chown=user app.py .
 
 EXPOSE 8501

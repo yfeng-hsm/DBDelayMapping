@@ -95,8 +95,12 @@ timetable update row in memory.
   - y-axis: the five train runs with the highest maximum delay in the window.
   - color: delay in minutes.
 - A selected train run map and curve showing delay along its stop sequence.
+- A static data completeness audit for 2026-06 and 2026-07:
+  - x-axis: hour of day.
+  - y-axis: continuous days from June 1 through July 31.
+  - red cells: likely collection gaps with fewer than 100 raw rows in that hour.
 
-The main tabs are ordered as `Moving trains`, `Propagation`, `Train run`, and `Diagnostics`.
+The main tabs are ordered as `Moving trains`, `Propagation`, `Train run`, `Data completeness`, and `Diagnostics`.
 
 ## License
 
